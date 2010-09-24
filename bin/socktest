@@ -1,0 +1,237 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use File::Basename;
+use Getopt::Long;
+use Socket;
+
+sub parse_args {
+	my $opt = {};
+
+	GetOptions $opt, qw(
+		bind
+		listen
+		connect
+		verbose
+		reuse
+		maxconn=i
+		help
+	) or die $!;
+
+	if (@ARGV < 1 or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] [HOSTS..] PORTS..
+END
+
+		exit 0;
+	}
+
+	return ($opt, @ARGV);
+}
+
+sub parse_ports {
+	my ($text) = @_;
+
+	if ($text =~ /^(\d+)$/) {
+		my $n1 = int($1);
+		return [$n1, $n1];
+	} elsif ($text =~ /^(\d+)([\-\+])(\d+)$/) {
+		my ($n1, $n2) = map {int} ($1, $3);
+		$n2 += $n1 if $n1 > $n2 || $n2 eq '+';
+		return [$n1, $n2];
+	} elsif ($text =~ /^[\-\+](\d+)$/) {
+		return [0, int($1)];
+	} elsif ($text =~ /^(\d+)[\-\+]$/) {
+		my $n1 = int($1);
+		my $n2 = $n1 + 10;
+		return [$n1, $n2];
+	}
+}
+
+sub parse_targets {
+	my (@targets) = @_;
+	my @hostports = ();
+	my @hosts = qw(localhost);
+	my $hosts_added = 0;
+
+	for my $target (@targets) {
+		for my $chunk (split /[\s,:]+/, $target) {
+			my $ports = parse_ports($chunk);
+
+			if ($ports) {
+				push @hostports, [$_, $ports] foreach @hosts;
+				$hosts_added = 0;
+			} else {
+				if ($hosts_added) {
+					push @hosts, $chunk;
+				} else {
+					@hosts = ($chunk);
+				}
+
+				$hosts_added = 1;
+			}
+		}
+	}
+
+	return @hostports;
+}
+
+sub test_addr {
+	my ($opt, $host, $port, $hostport) = @_;
+	my $iaddr = inet_aton($host);
+	my $paddr;
+
+	if ($iaddr) {
+		print "inet_aton($host): [OK]\n" if $opt->{verbose};
+		$paddr = sockaddr_in($port, $iaddr);
+
+		if ($paddr) {
+			print "sockaddr_in($hostport): [OK]\n" if $opt->{verbose};
+		} else {
+			print "sockaddr_in($hostport): $!\n";
+		}
+	} else {
+		print "inet_aton($host): $!\n";
+	}
+
+	return $paddr;
+}
+
+sub test_socket {
+	my ($opt) = @_;
+	my $sock;
+
+	if (socket $sock, PF_INET, SOCK_STREAM, getprotobyname('tcp')) {
+		print "socket: [OK]\n" if $opt->{verbose};
+	} else {
+		print "socket: $!\n";
+		exit 1;
+	}
+
+	return $sock;
+}
+
+sub test_close {
+	my ($opt, $sock) = @_;
+
+	if (close $sock) {
+		print "close: [OK]\n" if $opt->{verbose};
+	} else {
+		print "close: $!\n";
+		exit 1;
+	}
+}
+
+sub test_shutdown {
+	my ($opt, $sock) = @_;
+
+	if (shutdown $sock, 2) {
+		print "shutdown: [OK]\n" if $opt->{verbose};
+	} else {
+		print "shutdown: $!\n";
+	}
+}
+
+sub test_bind {
+	my ($opt, $sock, $paddr, $hostport) = @_;
+	my $connected = 0;
+
+	if (bind $sock, $paddr) {
+		print "bind($hostport): [FREE]\n" if $opt->{verbose} or !$opt->{listen};
+		$connected = test_listen($opt, $sock, $hostport) if $opt->{listen};
+	} else {
+		print "bind($hostport): $!\n";
+	}
+
+	return $connected;
+}
+
+sub test_listen {
+	my ($opt, $sock, $hostport) = @_;
+	my $connected = 0;
+	my $maxconn = defined $opt->{maxconn} ? $opt->{maxconn} : SOMAXCONN;
+
+	if (listen $sock, $maxconn) {
+		print "listen($hostport): [OK]\n";
+		$connected = 1;
+	} else {
+		print "listen($hostport): $!\n";
+	}
+
+	return $connected;
+}
+
+sub test_connect {
+	my ($opt, $sock, $paddr, $hostport) = @_;
+	my $connected = 0;
+
+	if (connect $sock, $paddr) {
+		print "connect($hostport): [CONNECTED]\n";
+		$connected = 1;
+	} else {
+		print "connect($hostport): $!\n";
+	}
+
+	return $connected;
+}
+
+sub run_socktest {
+	my ($opt, $sock, $host, $port) = @_;
+
+	my $hostport = ($host eq 'localhost' || $host eq '127.0.0.1') ?
+		$port : "$host:$port";
+
+	my $paddr = test_addr($opt, $host, $port, $hostport);
+
+	if ($paddr) {
+		$sock = test_socket($opt) unless $opt->{reuse};
+
+		my $connected = 0;
+
+		if ($opt->{bind}) {
+			$connected = test_bind($opt, $sock, $paddr, $hostport);
+		}
+
+		if ($opt->{connect}) {
+			$connected = test_connect($opt, $sock, $paddr, $hostport);
+		}
+
+		test_shutdown($opt, $sock) if $connected;
+		test_close($opt, $sock) unless $opt->{reuse};
+	}
+
+	print "\n" if $opt->{verbose};
+}
+
+sub main {
+	my ($opt, @targets) = parse_args();
+	my @hostports = parse_targets(@targets);
+
+	if (@hostports == 0) {
+		print "no ports specified\n";
+		exit 1;
+	}
+
+	if (!$opt->{connect} or $opt->{listen}) {
+		$opt->{bind} = 1;
+	}
+
+	my $sock = test_socket($opt) if $opt->{reuse};
+	print "\n" if $opt->{verbose} and $opt->{reuse};
+
+	for my $hostport (@hostports) {
+		my ($host, $ports) = @$hostport;
+		my ($from_port, $to_port) = @$ports;
+
+		for my $port ($from_port..$to_port) {
+			run_socktest($opt, $sock, $host, $port);
+		}
+	}
+
+	test_close($opt, $sock) if $opt->{reuse};
+}
+
+main();

@@ -1,0 +1,329 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use Cwd;
+use File::Basename;
+use File::Path;
+use Getopt::Long;
+
+sub parse_args {
+	my $opt = {};
+	@ARGV = map {/--?d?(\d+)/ ? ('-depth' => int($1)) : $_} @ARGV;
+
+	GetOptions $opt, qw(
+		all files depth=i maxentries=i nofollowlinks
+		color setcolors=s readlink expand
+		indent=s prefix=s
+		help
+	) or die $!;
+
+	if ($opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] [DIRS..]
+
+Display the directory structure as indent-based tree. If DIRS are not supplied,
+the current directory will be scanned.
+
+A path can be combined into one line if each directory in the path contains
+only one entry.
+
+Search Options:
+  -a, -all
+    Include hidden files starting with a dot (like 'ls -A').
+
+  -f, -files
+    Include files, not only directories.
+
+  -d {N}, -depth {N}, -{N} (e.g. -3)
+    Limit the search depth to {N}. Default is 5. Set 0 not to limit the depth.
+
+  -m {M}, -maxentries {M}
+    Limit the number of entries to search in each directory to {M}. Default is 
+    256. Set 0 not to limit the number.
+
+  -n, -nofollowlinks
+    Do not follow symbolic links pointing to a directory.
+
+Output Options:
+  -c, -color
+  -s {LS_COLORS}, -setcolors {LS_COLORS}
+    Use color based on {LS_COLORS}. Unless explicitly given in the option, the
+    LS_COLORS environment variable will be used if it is set. Otherwise, a
+    default set of colors will be used.
+
+  -r, -readlink
+    Append the readlink values for symbolic links (as in 'ls -l').
+
+  -e, -expand
+    Do not combine a path into one line, i.e., display exactly one entry per
+    line.
+
+  -i {INDENT}, -indent {INDENT}
+    Set indent for each depth. Default is '  ' (two spaces).
+
+  -p {PREFIX}, -prefix {PREFIX}
+    Set perfix for each line. Default is the empty string.
+
+  -h, -help
+    Display help.
+END
+
+		exit 1;
+	}
+
+	# Set default values
+	defined $opt->{indent} or $opt->{indent} = '  ';
+	defined $opt->{prefix} or $opt->{prefix} = '';
+	defined $opt->{depth} or $opt->{depth} = 5;
+	defined $opt->{maxentries} or $opt->{maxentries} = 256;
+
+	# Set LS_COLORS
+	defined $opt->{setcolors} and $opt->{color} = 1;
+	configure_lscolors($opt) if $opt->{color};
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub make_regex {
+	($_) = @_;
+	$_ = quotemeta $_;
+	s/\\([\*\+])/.$1/g;
+	s/\\\?/./g;
+	return $_;
+}
+
+sub configure_lscolors {
+	my ($opt) = @_;
+
+	my %ls_color_map = map {$_ => 0} qw(ln di ex fi so pi bd cd or mi);
+	my %ls_pattern_map = ();
+	my @ls_patterns = ();
+
+	my $ls_color_map;
+	
+	if (defined $opt->{setcolors}) {
+		$ls_color_map = $opt->{setcolors};
+	} elsif (defined $ENV{LS_COLORS}) {
+		$ls_color_map = $ENV{LS_COLORS};
+	} else {
+		$ls_color_map =
+			'no=00:fi=00:di=01;34:ln=01;36:pi=40;33:so=01;35:bd=40;33;01:'.
+			'cd=40;33;01:or=01;05;37;41:mi=01;05;37;41:ex=01;32';
+	}
+	
+	for (split /:/, $ls_color_map) {
+		my ($lhs, $rhs) = split /=/;
+		
+		if (defined $ls_color_map{$lhs}) {
+			$ls_color_map{$lhs} = $rhs;
+		} else {
+			my $k = make_regex $lhs;
+
+			unless (defined $ls_pattern_map{$k}) {
+				$ls_pattern_map{$k} = $rhs;
+				push @ls_patterns, $k;
+			}
+		}
+	}
+
+	$opt->{ls_color_map} = \%ls_color_map;
+	$opt->{ls_pattern_map} = \%ls_pattern_map;
+	$opt->{ls_patterns} = \@ls_patterns;
+}
+
+sub should_display {
+	my ($opt, $name) = @_;
+	return ($opt->{all} || $name !~ /^\./) && ($opt->{files} || -d $name);
+}
+
+sub get_children {
+	my ($opt) = @_;
+	my @children = ();
+	my $n = 0;
+
+	if (opendir DIR, '.') {
+		while (defined(my $child = readdir DIR)) {
+			next if $child =~ /^\.\.?$/;
+
+			if (should_display($opt, $child)) {
+				push @children, $child;
+			}
+
+			$n++;
+			last if $opt->{maxentries} and $n >= $opt->{maxentries};
+		}
+
+		closedir DIR;
+	}
+
+	return sort @children;
+}
+
+sub color {
+	my ($text, $code) = @_;
+	return $code ? "\x1B\x5B".$code."m".$text."\x1B\x5B0m" : $text;
+}
+
+sub format_name {
+	my ($opt, $name) = @_;
+
+	if ($opt->{color}) {
+		if (-e $name) {
+			if (-l $name) {
+				return color($name, $opt->{ls_color_map}{ln});
+			} elsif (-d $name) {
+				return color($name, $opt->{ls_color_map}{di});
+			} elsif (-x $name) {
+				return color($name, $opt->{ls_color_map}{ex});
+			} elsif (-f $name) {
+				for my $k (@{$opt->{ls_patterns}}) {
+					if ($name =~ /^$k$/) {
+						return color($name, $opt->{ls_pattern_map}{$k});
+					}
+				}
+
+				return color($name, $opt->{ls_color_map}{fi});
+			} elsif (-S $name) {
+				return color($name, $opt->{ls_color_map}{so});
+			} elsif (-p $name) {
+				return color($name, $opt->{ls_color_map}{pi});
+			} elsif (-b $name) {
+				return color($name, $opt->{ls_color_map}{bd});
+			} elsif (-c $name) {
+				return color($name, $opt->{ls_color_map}{cd});
+			}
+		} else {
+			if (-l $name) {
+				return color($name, $opt->{ls_color_map}{or});
+			} else {
+				return color($name, $opt->{ls_color_map}{mi});
+			}
+		}
+	}
+
+	return $name;
+}
+
+sub display_path {
+	my ($opt, $path, $depth, $linked, $with_prefix) = @_;
+	my $orig_cwd = getcwd;
+
+	print $opt->{indent} x $depth, $opt->{prefix} if $with_prefix;
+
+	if ($path =~ m{^/}) {
+		chdir '/';
+		$path =~ s{^/+}{};
+		print '/';
+	}
+
+	$path =~ s{/+$}{};
+	my @chunks = split m{/+}, $path;
+	my $last = pop @chunks;
+
+	for my $name (@chunks) {
+		print format_name($opt, $name);
+		print '/';
+		chdir $name;
+	}
+
+	display_entry($opt, $last, $depth, $linked, 0);
+	chdir $orig_cwd;
+}
+
+sub display_entry {
+	my ($opt, $name, $depth, $linked, $with_prefix) = @_;
+
+	print $opt->{indent} x $depth, $opt->{prefix} if $with_prefix;
+	print format_name($opt, $name);
+
+	if ($opt->{readlink} and -l $name) {
+		print ' -> ';
+		display_path($opt, readlink($name), $depth, 1, 0);
+	} elsif ($opt->{nofollowlinks} and ($linked or -l $name)) {
+		print "\n";
+	} elsif (-d $name) {
+		my $expand = $linked || $opt->{expand};
+		my $stop_here = $opt->{depth} && $depth + 1 >= $opt->{depth};
+
+		if ($expand and $stop_here) {
+			print "\n";
+			return;
+		}
+
+		# Chdir down the directory
+		my $orig_cwd; # will be set when a symlink directory needs to be followed
+		my $deeper = 0; # will be incremented while non-symlink entries are appended to the path
+
+		$orig_cwd = getcwd if -l $name;
+		chdir $name;
+		$deeper++ unless defined $orig_cwd;
+
+		my @children = get_children($opt);
+		my $symlink_read = 0;
+
+		# Combine the path as long as possible
+		if (!$expand) {
+			while (@children == 1) {
+				$name = $children[0];
+				print '/', format_name($opt, $name);
+
+				if ($opt->{readlink} and -l $name) {
+					print ' -> ';
+					display_path($opt, readlink($name), $depth, 1, 0);
+					$symlink_read = 1;
+					last;
+				} elsif (-d $name) {
+					$orig_cwd = getcwd if !defined $orig_cwd and -l $name;
+					chdir $name;
+					$deeper++ unless defined $orig_cwd;
+
+					@children = get_children($opt);
+				} else {
+					@children = ();
+					last;
+				}
+			}
+		}
+
+		# Display children
+		unless ($symlink_read) {
+			print "\n";
+
+			if (!$stop_here and @children) {
+				for my $child (@children) {
+					display_entry($opt, $child, $depth + 1, 0, 1);
+				}
+			}
+		}
+
+		# Chdir back to the original directory
+		chdir $orig_cwd if defined $orig_cwd;
+
+		for (my $i = 0; $i < $deeper; $i++) {
+			chdir '..';
+		}
+	} else {
+		print "\n";
+	}
+}
+
+sub main {
+	my ($opt, @dirs) = parse_args();
+
+	if (@dirs) {
+		for my $dir (@dirs) {
+			if (should_display($opt, $dir)) {
+				display_path($opt, $dir, 0, 0, 1);
+			}
+		}
+	} else {
+		for my $child (get_children($opt)) {
+			display_entry($opt, $child, 0, 0, 1);
+		}
+	}
+}
+
+main();

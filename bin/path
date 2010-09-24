@@ -1,0 +1,2 @@
+#!/usr/bin/perl
+print join("\n\n", map {s{^//}{/} foreach @_ = split /:/; join "\n", @_} (@ARGV ? @ARGV : $ENV{PATH})), "\n";
