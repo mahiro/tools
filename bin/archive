@@ -1,9 +1,10 @@
-#!/usr/bin/env perl
+#!/usr/bin/perl -w
 use strict;
 use FindBin;
 
 BEGIN {
-	eval {require "$FindBin::Script.local"}
+	my $local = "$FindBin::Script.local";
+	require $local if -f $local;
 }
 
 use Cwd qw(abs_path);
@@ -11,11 +12,17 @@ use DateTime;
 use File::Basename;
 use File::Path;
 use Getopt::Long;
+use IO::Handle;
 use POSIX;
 
 sub parse_args {
 	my $opt = {};
-	GetOptions $opt, qw(directory=s path=s gmt mtime verbose help) or die $!;
+	GetOptions $opt, qw(
+		directory=s path=s
+		gmt mtime
+		force interactive verbose
+		help
+	) or die $!;
 
 	if ($opt->{help}) {
 		my $cmd = basename($0);
@@ -27,19 +34,25 @@ Move the specified files (or files in the current directory if omitted) to an
 archive directory, classifying the files by the date/time.
 
 Options:
-  -directory ARCHIVE_DIRECTORY
-    Specify ARCHIVE_DIRECTORY. Default = ./archives
+  -d ARCHIVE_DIR, -directory ARCHIVE_DIR
+    Specify archive directory. Default = ./archives
 
-  -path DATETIME_FORMAT
+  -p DATETIME, -path DATETIME
     Specify date/time format. Default = \%Y/\%m/\%d
 
-  -gmt
+  -g, -gmt
     Use GMT intead of local time.
 
-  -verbose
+  -f, -force
+    Skip the confirmation step at the beginning.
+
+  -i, -interactive
+    Confirm each file to move interactively.
+
+  -v, -verbose
     Print each moved file.
 
-  -help
+  -h, -help
     Display help.
 END
 
@@ -91,6 +104,12 @@ sub move_file {
 			strftime($path, gmtime $time) :
 			strftime($path, localtime $time));
 
+	if ($opt->{interactive}) {
+		print "$dst: $file: Archive? [y/N] ";
+		STDOUT->flush;
+		return if <STDIN> !~ /^y/i;
+	}
+
 	mkpath "$absdir/$dst" if !-d "$absdir/$dst";
 	print "mv $file $dir/$dst\n" if $opt->{verbose};
 	rename $file, "$absdir/$dst/".basename($file);
@@ -113,6 +132,28 @@ sub main {
 	for my $file (@files) {
 		if (should_move($file, $absdir)) {
 			$plan->{$file} = get_time($opt, $file);
+		}
+	}
+
+	# Confirm
+	my $num_files = scalar(keys %$plan);
+
+	if ($num_files == 0) {
+		print "No files to move\n";
+		exit 1;
+	}
+
+	unless ($opt->{force}) {
+		print "Destination: $dir/$path\n";
+		print "(Directory will be created)\n" unless -d $dir;
+		print "Number of files to move: $num_files\n";
+		print "\n";
+		print "Proceed? [y/N] ";
+		STDOUT->flush;
+
+		if (<STDIN> !~ /^y/i) {
+			print "Canceled\n";
+			exit 1;
 		}
 	}
 
