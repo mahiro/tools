@@ -1,0 +1,178 @@
+#!/usr/bin/perl -w
+use strict;
+use FindBin;
+
+BEGIN {
+	my $local = "$FindBin::RealBin/$FindBin::RealScript.local";
+	require $local if -f $local;
+}
+
+use Date::Parse;
+use POSIX;
+use Getopt::Long;
+use File::Basename;
+
+sub parse_args {
+	my $opt = {};
+	GetOptions $opt, qw(from=s to=s quiet help) or die $!;
+
+	if (@ARGV < 2 or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [-from FROM_TIME] [-to TO_TIME] FROM_NUM TO_NUM [TARGET_NUM]
+
+Calculate ETA based on two points of time and amount of data to process.
+Remaining time (from the current time) will also be displayed.
+
+* Either -from or -to must be specified.
+
+Other Options:
+  -quiet  display less information.
+  -help   display help message with details.
+END
+
+		if ($opt->{help}) {
+			print <<END
+
+Description:
+Let
+  (T0, T1) = (FROM_TIME, TO_TIME), and
+  (N0, N1, N2) = (FROM_NUM, TO_NUM, TARGET_NUM).
+
+The ETA is calculated by answering the following question:
+"Given N0 at time T0 and N1 at time T1, assuming the numbers change linearly,
+what is the time T2 when the number becomes N2?"
+
+If FROM_TIME or TO_TIME is omitted, the current time will be assumed.
+
+For convenience, if TARGET_NUM is omitted, the following reinterpretation
+will take place.
+
+If FROM_NUM < TO_NUM,
+  (N0, N1, N2) = (0, FROM_NUM, TO_NUM)
+Otherwise,
+  (N0, N1, N2) = (FROM_NUM, TO_NUM, 0).
+
+Use case 1:
+A process was started at 3:12pm, April 10. So far, 120 items have been
+processed. What is the ETA to have all 300 items processed?
+
+\$ $cmd -f '3:12pm, April 10' 120 300
+
+Use case 2:
+A process was started at 9am to process 10000 files. When I checked at 10am,
+there were 7000 files remaining. When will all the files be processed?
+
+\$ $cmd -f 9am -t 10am 10000 7000
+
+END
+		}
+
+		exit 1;
+	}
+
+	if (!defined($opt->{from}) and !defined($opt->{to})) {
+		print "Either -from or -to must be specified\n";
+		exit 1;
+	}
+
+	my ($n1, $n2, $n3);
+
+	if (@ARGV == 2) {
+		($n1, $n2) = @ARGV;
+		
+		if ($n1 < $n2) {
+			($n1, $n2, $n3) = (0, $n1, $n2);
+		} else {
+			$n3 = 0;
+		}
+	} else {
+		($n1, $n2, $n3) = @ARGV;
+	}
+
+	return ($opt, $n1, $n2, $n3);
+}
+
+sub format_period {
+	my ($elap) = @_;
+	my $negative = ($elap < 0);
+	my @fmt = ();
+
+	if ($negative) {
+		$elap = -$elap;
+		push @fmt, '-';
+	}
+
+	my $SEC  =  1;
+	my $MIN  = 60 * $SEC;
+	my $HOUR = 60 * $MIN;
+	my $DAY  = 24 * $HOUR;
+
+	my $rest = $elap;
+
+	if ($rest >= $MIN) {
+		if ($rest >= $HOUR) {
+			if ($rest >= $DAY) {
+				my $d = floor($rest / $DAY);
+				push @fmt, $d.'day'.($d == 1 ? '' : 's').' ';
+				$rest %= $DAY;
+			}
+
+			push @fmt, sprintf("%02d:", floor($rest / $HOUR));
+			$rest %= $HOUR;
+		}
+
+		push @fmt, sprintf("%02d:", floor($rest / $MIN));
+		$rest %= $MIN;
+	}
+
+	push @fmt, sprintf("%02d", ceil($rest));
+	return join('', @fmt);
+}
+
+sub format_time {
+	my ($time, $num) = @_;
+	return strftime("%Y-%m-%d %H:%M:%S %Z", localtime($time));
+}
+
+sub main {
+	my ($opt, $n1, $n2, $n3) = parse_args();
+
+	my $now = time;
+	my $from_time = defined($opt->{from}) ? str2time($opt->{from}) : $now;
+	my $to_time = defined($opt->{to}) ? str2time($opt->{to}) : $now;
+
+	if (!defined($from_time) or !defined($to_time)) {
+		print "Invalid date/time specified.\n";
+		exit 1;
+	}
+
+	my $sec_per_num = ($to_time - $from_time) / ($n2 - $n1);
+	my $num_per_sec = 1 / $sec_per_num;
+	my $total_sec = $sec_per_num * ($n3 - $n1);
+	my $end_time = $from_time + $total_sec;
+	my $rem_sec = $end_time - $now;
+
+	print "ETA:       [", format_time($end_time), "]\n";
+	print "Remaining: ", format_period($rem_sec), "\n";
+
+	unless ($opt->{quiet}) {
+		print "Total:     ", format_period($total_sec), "\n";
+		print "\n";
+		print "n/sec:     ", $num_per_sec, "\n";
+		print "sec/n:     ", $sec_per_num, "\n";
+		print "\n";
+
+		my @pairs = sort {$a->[0] <=> $b->[0]} (
+			[$from_time, $n1], [$to_time, $n2], [$end_time, $n3]
+		);
+
+		for (@pairs) {
+			my ($time, $num) = @$_;
+			print '[', format_time($time), '] ', $num, "\n";
+		}
+	}
+}
+
+main();
