@@ -3,7 +3,7 @@ use strict;
 use FindBin;
 
 BEGIN {
-	my $local = "$FindBin::Script.local";
+	my $local = "$FindBin::RealBin/$FindBin::RealScript.local";
 	require $local if -f $local;
 }
 
