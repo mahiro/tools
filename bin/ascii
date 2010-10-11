@@ -1,0 +1,363 @@
+#!/usr/bin/perl -w
+use strict;
+
+use File::Basename;
+use Getopt::Long;
+
+sub parse_args {
+	my $opt = {};
+
+	GetOptions $opt, qw(
+		caret
+		help
+	) or die $!;
+
+	if ($opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] [QUERY..]
+
+Display a table of ASCII characters. If QUERY is given, display details of
+characters matching with the QUERY.
+
+Options:
+  -c, -caret
+    Display caret notation for control codes.
+
+  -h, -help
+    Display help.
+
+END
+
+		exit 0;
+	}
+
+	return ($opt, @ARGV);
+}
+
+my $ascii = [
+	{code => 0x00, caret => '^@', acro => 'NUL', name => 'Null'},
+	{code => 0x01, caret => '^A', acro => 'SOH',
+		name => 'Start of Heading'},
+	{code => 0x02, caret => '^B', acro => 'STX', name => 'Start of Text'},
+	{code => 0x03, caret => '^C', acro => 'ETX', name => 'End of Text'},
+	{code => 0x04, caret => '^D', acro => 'EOT',
+		name => 'End of Transmission'},
+	{code => 0x05, caret => '^E', acro => 'ENQ', name => 'Enquiry'},
+	{code => 0x06, caret => '^F', acro => 'ACK', name => 'Acknowledge'},
+	{code => 0x07, caret => '^G', acro => 'BEL', name => 'Bell',
+		cchar => '\\a'},
+	{code => 0x08, caret => '^H', acro => 'BS' , name => 'Backspace',
+		cchar => '\\b'},
+	{code => 0x09, caret => '^I', acro => 'HT' ,
+		name => 'Character Tabulation', cchar => '\\t',
+		alt_names => ['Horizontal Tabulation', 'Tab'],
+		alt_acros => ['CT', 'TAB']},
+	{code => 0x0A, caret => '^J', acro => 'LF', name => 'Line Feed',
+		cchar => '\\n',
+		alt_names => ['New Line', 'End of Line'],
+		alt_acros => ['NL', 'EOL']},
+	{code => 0x0B, caret => '^K', acro => 'VT', name => 'Line Tabulation',
+		cchar => '\\v',
+		alt_names => ['Vertical Tabulation'],
+		alt_acros => ['LT']},
+	{code => 0x0C, caret => '^L', acro => 'FF', name => 'Form Feed',
+		cchar => '\\f'},
+	{code => 0x0D, caret => '^M', acro => 'CR', name => 'Carriage Return',
+		cchar => '\\r'},
+	{code => 0x0E, caret => '^N', acro => 'SO', name => 'Shift Out'},
+	{code => 0x0F, caret => '^O', acro => 'SI', name => 'Shift In'},
+	
+	{code => 0x10, caret => '^P', acro => 'DLE',
+		name => 'Data Link Escape'},
+	{code => 0x11, caret => '^Q', acro => 'DC1',
+		name => 'Device Control One',
+		alt_names => ['Transmit On'],
+		alt_acros => ['XON']},
+	{code => 0x12, caret => '^R', acro => 'DC2',
+		name => 'Device Control Two'},
+	{code => 0x13, caret => '^S', acro => 'DC3',
+		name => 'Device Control Three',
+		alt_names => ['Transmit Off'],
+		alt_acros => ['XOFF']},
+	{code => 0x14, caret => '^T', acro => 'DC4',
+		name => 'Device Control Four'},
+	{code => 0x15, caret => '^U', acro => 'NAK',
+		name => 'Negative Acknowledge'},
+	{code => 0x16, caret => '^V', acro => 'SYN',
+		name => 'Synchronous Idle'},
+	{code => 0x17, caret => '^W', acro => 'ETB',
+		name => 'End of Transmission Block'},
+	{code => 0x18, caret => '^X', acro => 'CAN', name => 'Cancel'},
+	{code => 0x19, caret => '^Y', acro => 'EM', name => 'End of Medium'},
+	{code => 0x1A, caret => '^Z', acro => 'SUB', name => 'Substitute'},
+	{code => 0x1B, caret => '^[', acro => 'ESC', name => 'Escape',
+		cchar => '\\e'},
+	{code => 0x1C, caret => '^\\', acro => 'FS',
+		name => 'Information Separator Four',
+		alt_names => ['File Separator']},
+	{code => 0x1D, caret => '^]', acro => 'GS',
+		name => 'Information Separator Three',
+		alt_names => ['Group Separator']},
+	{code => 0x1E, caret => '^^', acro => 'RS',
+		name => 'Information Separator Two',
+		alt_names => ['Record Separator']},
+	{code => 0x1F, caret => '^_', acro => 'US',
+		name => 'Information Separator One',
+		alt_names => ['Unit Separator']},
+	
+	{code => 0x20, glyph => ' ', acro => 'SP', name => 'Space',
+		cchar => ' '},
+	{code => 0x21, glyph => '!', name => 'Exclamation Mark',
+		alt_names => ['Factorial', 'Bang']},
+	{code => 0x22, glyph => '"', name => 'Quotation Mark',
+		alt_names => ['Double Quote']},
+	{code => 0x23, glyph => '#', name => 'Number Sign',
+		alt_names => ['Pound Sign', 'Hash', 'Crosshatch',
+			'Octothorpe']},
+	{code => 0x24, glyph => '$', name => 'Dollar Sign',
+		alt_names => ['Milreis', 'Escudo']},
+	{code => 0x25, glyph => '%', name => 'Percent Sign'},
+	{code => 0x26, glyph => '&', name => 'Ampersand'},
+	{code => 0x27, glyph => "'", name => 'Apostrophe',
+		alt_names => ['Apostrophe-Quote', 'Single Quote']},
+	{code => 0x28, glyph => '(', name => 'Left Parenthesis',
+		alt_names => ['Opening Parenthesis']},
+	{code => 0x29, glyph => ')', name => 'Right Parenthesis',
+		alt_names => ['Closing Parenthesis']},
+	{code => 0x2A, glyph => '*', name => 'Asterisk',
+		alt_names => ['Star']},
+	{code => 0x2B, glyph => '+', name => 'Plus Sign'},
+	{code => 0x2C, glyph => ',', name => 'Comma',
+		alt_names => ['Decimal Separator']},
+	{code => 0x2D, glyph => '-', name => 'Hyphen-Minus',
+		alt_names => ['Hyphen', 'Minus Sign']},
+	{code => 0x2E, glyph => '.', name => 'Full Stop',
+		alt_names => ['Period', 'Dot', 'Decimal Poinot']},
+	{code => 0x2F, glyph => '/', name => 'Solidus',
+		alt_names => ['Slash', 'Virgule']},
+	
+	{code => 0x30, glyph => '0', name => 'Digit Zero'},
+	{code => 0x31, glyph => '1', name => 'Digit One'},
+	{code => 0x32, glyph => '2', name => 'Digit Two'},
+	{code => 0x33, glyph => '3', name => 'Digit Three'},
+	{code => 0x34, glyph => '4', name => 'Digit Four'},
+	{code => 0x35, glyph => '5', name => 'Digit Five'},
+	{code => 0x36, glyph => '6', name => 'Digit Six'},
+	{code => 0x37, glyph => '7', name => 'Digit Seven'},
+	{code => 0x38, glyph => '8', name => 'Digit Eight'},
+	{code => 0x39, glyph => '9', name => 'Digit Nine'},
+	{code => 0x3A, glyph => ':', name => 'Colon'},
+	{code => 0x3B, glyph => ';', name => 'Semicolon'},
+	{code => 0x3C, glyph => '<', name => 'Less-than Sign'},
+	{code => 0x3D, glyph => '=', name => 'Equals Sign'},
+	{code => 0x3E, glyph => '>', name => 'Greater-than Sign'},
+	{code => 0x3F, glyph => '?', name => 'Question Mark'},
+	
+	{code => 0x40, glyph => '@', name => 'Commercial At',
+		alt_names => ['At Sign']},
+	{code => 0x41, glyph => 'A', name => 'Latin Capital Letter A'},
+	{code => 0x42, glyph => 'B', name => 'Latin Capital Letter B'},
+	{code => 0x43, glyph => 'C', name => 'Latin Capital Letter C'},
+	{code => 0x44, glyph => 'D', name => 'Latin Capital Letter D'},
+	{code => 0x45, glyph => 'E', name => 'Latin Capital Letter E'},
+	{code => 0x46, glyph => 'F', name => 'Latin Capital Letter F'},
+	{code => 0x47, glyph => 'G', name => 'Latin Capital Letter G'},
+	{code => 0x48, glyph => 'H', name => 'Latin Capital Letter H'},
+	{code => 0x49, glyph => 'I', name => 'Latin Capital Letter I'},
+	{code => 0x4A, glyph => 'J', name => 'Latin Capital Letter J'},
+	{code => 0x4B, glyph => 'K', name => 'Latin Capital Letter K'},
+	{code => 0x4C, glyph => 'L', name => 'Latin Capital Letter L'},
+	{code => 0x4D, glyph => 'M', name => 'Latin Capital Letter M'},
+	{code => 0x4E, glyph => 'N', name => 'Latin Capital Letter N'},
+	{code => 0x4F, glyph => 'O', name => 'Latin Capital Letter O'},
+	
+	{code => 0x50, glyph => 'P', name => 'Latin Capital Letter P'},
+	{code => 0x51, glyph => 'Q', name => 'Latin Capital Letter Q'},
+	{code => 0x52, glyph => 'R', name => 'Latin Capital Letter R'},
+	{code => 0x53, glyph => 'S', name => 'Latin Capital Letter S'},
+	{code => 0x54, glyph => 'T', name => 'Latin Capital Letter T'},
+	{code => 0x55, glyph => 'U', name => 'Latin Capital Letter U'},
+	{code => 0x56, glyph => 'V', name => 'Latin Capital Letter V'},
+	{code => 0x57, glyph => 'W', name => 'Latin Capital Letter W'},
+	{code => 0x58, glyph => 'X', name => 'Latin Capital Letter X'},
+	{code => 0x59, glyph => 'Y', name => 'Latin Capital Letter Y'},
+	{code => 0x5A, glyph => 'Z', name => 'Latin Capital Letter Z'},
+	{code => 0x5B, glyph => '[', name => 'Left Square Bracket',
+		alt_names => ['Opening Square Bracket']},
+	{code => 0x5C, glyph => '\\', name => 'Reverse Solidus',
+		alt_names => ['Backslash']},
+	{code => 0x5D, glyph => ']', name => 'Right Square Bracket',
+		alt_names => ['Closing Square Bracket']},
+	{code => 0x5E, glyph => '^', name => 'Circumflex Accent',
+		alt_names => ['Caret']},
+	{code => 0x5F, glyph => '_', name => 'Low Line',
+		alt_names => ['Underscore', 'Spacing Underscore']},
+	
+	{code => 0x60, glyph => '`', name => 'Grave Accent',
+		alt_names => ['Backtick']},
+	{code => 0x61, glyph => 'a', name => 'Latin Small Letter a'},
+	{code => 0x62, glyph => 'b', name => 'Latin Small Letter b'},
+	{code => 0x63, glyph => 'c', name => 'Latin Small Letter c'},
+	{code => 0x64, glyph => 'd', name => 'Latin Small Letter d'},
+	{code => 0x65, glyph => 'e', name => 'Latin Small Letter e'},
+	{code => 0x66, glyph => 'f', name => 'Latin Small Letter f'},
+	{code => 0x67, glyph => 'g', name => 'Latin Small Letter g'},
+	{code => 0x68, glyph => 'h', name => 'Latin Small Letter h'},
+	{code => 0x69, glyph => 'i', name => 'Latin Small Letter i'},
+	{code => 0x6A, glyph => 'j', name => 'Latin Small Letter j'},
+	{code => 0x6B, glyph => 'k', name => 'Latin Small Letter k'},
+	{code => 0x6C, glyph => 'l', name => 'Latin Small Letter l'},
+	{code => 0x6D, glyph => 'm', name => 'Latin Small Letter m'},
+	{code => 0x6E, glyph => 'n', name => 'Latin Small Letter n'},
+	{code => 0x6F, glyph => 'o', name => 'Latin Small Letter o'},
+	
+	{code => 0x70, glyph => 'p', name => 'Latin Small Letter p'},
+	{code => 0x71, glyph => 'q', name => 'Latin Small Letter q'},
+	{code => 0x72, glyph => 'r', name => 'Latin Small Letter r'},
+	{code => 0x73, glyph => 's', name => 'Latin Small Letter s'},
+	{code => 0x74, glyph => 't', name => 'Latin Small Letter t'},
+	{code => 0x75, glyph => 'u', name => 'Latin Small Letter u'},
+	{code => 0x76, glyph => 'v', name => 'Latin Small Letter v'},
+	{code => 0x77, glyph => 'w', name => 'Latin Small Letter w'},
+	{code => 0x78, glyph => 'x', name => 'Latin Small Letter x'},
+	{code => 0x79, glyph => 'y', name => 'Latin Small Letter y'},
+	{code => 0x7A, glyph => 'z', name => 'Latin Small Letter z'},
+	{code => 0x7B, glyph => '{', name => 'Left Curly Bracket',
+		alt_names => ['Opening Curly Bracket', 'Left Brace']},
+	{code => 0x7C, glyph => '|', name => 'Vertical Line',
+		alt_names => ['Vertical Bar']},
+	{code => 0x7D, glyph => '}', name => 'Right Curly Bracket',
+		alt_names => ['Closing Curly Bracket', 'Right Brace']},
+	{code => 0x7E, glyph => '~', name => 'Tilde'},
+	{code => 0x7F, caret => '^?', acro => 'DEL', name => 'Delete'},
+];
+
+sub show_table {
+	my ($opt) = @_;
+
+	for my $i (0x0..0x7) {
+		for my $j (0x0..0xF) {
+			my $code = 0x10 * $i + $j;
+			printf('  %02X', $code);
+		}
+
+		print "\n";
+
+		for my $j (0x0..0xF) {
+			my $code = 0x10 * $i + $j;
+			my $item = $ascii->[$code];
+
+			if ($opt->{caret} and $item->{caret}) {
+				printf('%4s', $item->{caret});
+			} elsif ($item->{acro}) {
+				printf('%4s', $item->{acro});
+			} else {
+				printf('%4s', $item->{glyph});
+			}
+		}
+
+		print "\n\n";
+	}
+}
+
+sub match_query_internal {
+	my ($opt, $item, $q) = @_;
+	my $len = length($q);
+	
+	if ($len == 0) {
+		return 0;
+	} elsif ($len == 1) {
+		return 1 if chr($item->{code}) eq $q;
+	} elsif ($len == 2) {
+		if ($q =~ /^[\da-f]{2}$/i) {
+			return 1 if hex($q) == $item->{code};
+		}
+
+		if ($q =~ /^\^/) {
+			return 1 if defined $item->{caret} &&
+					$item->{caret} eq uc($q);
+		}
+	} elsif ($q =~ /^%([\da-f]{2})$/i) {
+		return 1 if hex($1) == $item->{code};
+	}
+
+	my $qre = quotemeta($q);
+
+	return 1 if defined $item->{acro} && $item->{acro} =~ /^$qre$/i;
+	return 1 if $item->{name} =~ /\b$qre/i;
+
+	if (defined $item->{alt_acros}) {
+		for my $acro (@{$item->{alt_acros}}) {
+			return 1 if $acro =~ /^$qre$/i;
+		}
+	}
+
+	if (defined $item->{alt_names}) {
+		for my $name (@{$item->{alt_names}}) {
+			return 1 if $name =~ /\b$qre/i;
+		}
+	}
+
+	return 0;
+}
+
+sub match_query {
+	my ($opt, $item, $query) = @_;
+	my $matched = 0;
+
+	for my $q (split /\s+/, $query) {
+		match_query_internal($opt, $item, $q) or return 0;
+		$matched = 1;
+	}
+
+	return $matched;
+}
+
+sub show_item {
+	my ($opt, $item) = @_;
+
+	my $glyph = defined $item->{glyph} ? $item->{glyph} : '<control>';
+	printf("0x\%02X  \%s\n", $item->{code}, $glyph);
+	print "  Name: $item->{name}\n";
+
+	if (defined $item->{alt_names}) {
+		print "  A.k.a.: ".join(', ', @{$item->{alt_names}})."\n";
+	}
+
+	for my $attr (qw(acro caret cchar)) {
+		if (defined $item->{$attr}) {
+			my $value = $item->{$attr};
+
+			if (defined $item->{'alt_'.$attr.'s'}) {
+				$value = join(', ', $value,
+					@{$item->{'alt_'.$attr.'s'}});
+			}
+
+			my $title = ($attr eq 'cchar' ? 'C-Char' :
+					ucfirst($attr));
+			print "  $title: $value\n";
+		}
+	}
+
+	print "\n";
+}
+
+sub main {
+	my ($opt, @query) = parse_args();
+
+	if (@query) {
+		for my $q (@query) {
+			for my $item (@$ascii) {
+				if (match_query($opt, $item, $q)) {
+					show_item($opt, $item);
+				}
+			}
+		}
+	} else {
+		show_table($opt);
+	}
+}
+
+main();
