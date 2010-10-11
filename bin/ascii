@@ -269,7 +269,7 @@ sub match_query_internal {
 	if ($len == 0) {
 		return 0;
 	} elsif ($len == 1) {
-		return 1 if chr($item->{code}) eq $q;
+		return chr($item->{code}) eq $q;
 	} elsif ($len == 2) {
 		if ($q =~ /^[\da-f]{2}$/i) {
 			return 1 if hex($q) == $item->{code};
