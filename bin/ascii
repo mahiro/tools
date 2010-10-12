@@ -134,7 +134,7 @@ my $ascii = [
 	{code => 0x2D, glyph => '-', name => 'Hyphen-Minus',
 		alt_names => ['Hyphen', 'Minus Sign']},
 	{code => 0x2E, glyph => '.', name => 'Full Stop',
-		alt_names => ['Period', 'Dot', 'Decimal Poinot']},
+		alt_names => ['Period', 'Dot', 'Decimal Point']},
 	{code => 0x2F, glyph => '/', name => 'Solidus',
 		alt_names => ['Slash', 'Virgule']},
 	
