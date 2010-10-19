@@ -1,0 +1,204 @@
+#!/usr/bin/perl -w
+use strict;
+
+use File::Basename;
+use File::Path;
+use Getopt::Long;
+
+sub parse_args {
+	my $opt = {cols => []};
+
+	@ARGV = grep {
+		if (/^-(\d+)$/) {
+			push @{$opt->{cols}}, $1;
+			0;
+		} else {
+			1;
+		}
+	} @ARGV;
+
+	GetOptions $opt, qw(
+		count   num
+		low     min
+		high    max
+		total   sum
+		average mean
+		stdev   sigma
+		regex=s
+		quiet
+		help
+	);
+
+	if ($opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] 
+
+Compute the sum from sequence of numbers read from STDIN (or files
+if specifed).
+
+Options:
+  -1, -2, -3, etc.
+    Use first, second, and/or third column in each line, respectively.
+
+  -count, -num
+    Display the number of samples.
+
+  -low, -min
+    Display the minimum value in the sample values.
+
+  -high, -max
+    Display the maximum value in the sample values.
+
+  -total, -sum
+    Display the sum of the sample values (this is default if no others
+    specified).
+
+  -average, -mean
+    Display the mean of the sample values.
+
+  -stdev, -sigma
+    Display the standard deviation of the sample values.
+
+  -quiet
+    Display only the result value(s). Do not display the label(s).
+
+  -help
+    Display help.
+END
+
+		exit 1;
+	}
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub main {
+	my $opt = parse_args();
+
+	my @cols = @{$opt->{cols}};
+	my %cols = map {$_ => 1} @cols;
+	my $maxcol = 0;
+
+	for my $col (@cols) {
+		$maxcol = $col if $maxcol < $col;
+	}
+
+	my $sum = 0;
+	my $sumsq = 0;
+	my $num = 0;
+	my $min;
+	my $max;
+
+	my $update = sub {
+		my ($x) = @_;
+		$sum += $x;
+		$sumsq += $x * $x;
+		$num++;
+		$min = $x if !defined $min or $min > $x;
+		$max = $x if !defined $max or $max < $x;
+	};
+
+	while (my $line = <>) {
+		if (defined $opt->{regex}) {
+			if ($line =~ /$opt->{regex}/o) {
+				if (@cols) {
+					for my $x (map {eval "\$$_"} @cols) {
+						&$update($x);
+					}
+				} else {
+					&$update(defined $1 ? $1 : $&);
+				}
+			}
+		} elsif (@cols) {
+			my $c = 1;
+
+			while ($line =~ /"([^"]|\\")*" |
+					'([^']|\\')*' |
+					\[([^\]]|\\\])*\] |
+					\(([^\)]|\\\))*\) |
+					\{([^\}]|\\\})*\} |
+					\S+
+					/gx) {
+				last if $c > $maxcol;
+				
+				if ($cols{$c} and $& =~ /((\d*\.)?\d+)/) {
+					&$update($1);
+				}
+
+				$c++;
+			}
+		} else {
+			while ($line =~ /((\d*\.)?\d+)/g) {
+				&$update($1);
+			}
+		}
+	}
+
+	my $mean;
+	my $variance;
+	my $stdev;
+
+	$mean = $sum / $num if $num > 0;
+	$variance = $sumsq / $num - $mean * $mean if $num > 0;
+	$stdev = sqrt($variance) if $num > 0;
+
+	my @targets = qw(count low high sum average stdev);
+
+	my %values = (
+		count   => $num,
+		low     => $min,
+		high    => $max,
+		sum   => $sum,
+		average => $mean,
+		stdev   => $stdev
+	);
+
+	my %alias = qw(
+		num   count
+		min   low
+		max   high
+		total sum
+		mean  average
+		sigma stdev
+	);
+
+	for my $alias (keys %alias) {
+		if ($opt->{$alias}) {
+			$opt->{$alias{$alias}} = 1;
+		}
+	}
+
+	my $any = 0;
+	my $maxlen = 0;
+
+	for my $target (@targets) {
+		$any = 1 if $opt->{$target};
+		my $len = length $target;
+		$maxlen = $len if $maxlen < $len;
+	}
+
+	$maxlen++;
+	my $fmt = "%-".$maxlen."s %s\n";
+
+	for my $target (@targets) {
+		if ($opt->{$target} or !$any) {
+			my $value;
+
+			if (defined $values{$target}) {
+				$value = sprintf('%g', $values{$target});
+			} else {
+				$value = 'undefined';
+			}
+
+			if ($opt->{quiet}) {
+				print $value, "\n";
+			} else {
+				printf $fmt, uc($target).':', $value;
+			}
+		}
+	}
+}
+
+main();

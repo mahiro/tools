@@ -25,7 +25,7 @@ sub parse_args {
 Usage: $cmd [OPTIONS] [HOSTS..] PORTS..
 END
 
-		exit 0;
+		exit 1;
 	}
 
 	return ($opt, @ARGV);

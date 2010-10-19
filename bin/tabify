@@ -1,0 +1,124 @@
+#!/usr/bin/perl -w
+use strict;
+
+use File::Basename;
+use File::Copy;
+use File::Temp qw(tempfile);
+use Getopt::Long;
+use IO::Handle;
+
+sub parse_args {
+	@ARGV = map {m/^-+(\d+)$/ ? ("-width", $1) : $_} @ARGV;
+
+	my $opt = {};
+	GetOptions $opt, qw(width=i adjust inplace suffix=s help) or die $!;
+
+	if ($opt->{help} or (
+			($opt->{inplace} or (defined $opt->{suffix} and $opt->{suffix} ne ''))
+				and @ARGV < 1)) {
+		my $cmd = basename($0);
+
+		print <<END;
+usage: $cmd [OPTIONS] [FILES..]
+Convert indent spaces into tabs. By default, FILES (or STDIN if no FILES) are
+read and the converted text is printed out to STDOUT. If -inplace is specified,
+the contents of FILES are replaced by the converted text.
+
+options:
+  -w TABWIDTH, -width TABWIDTH, -2, -4, -8, etc.
+    Specify the width of tabs for interpretation of the existing indents.
+
+  -a, -adjust
+    Use some spaces to retain the original length of indents. For example, if a
+    certain line starts with 6 spaces while the tab width is specified as 4,
+    the indent is converted into 1 tab followed by 2 spaces.
+
+  -i, -inplace
+    Replace the specified files.
+
+  -s, -suffix SUFFIX
+    If -inplace is turned on, the original files will be saved as the name with
+    SUFFIX appended while FILES are replaced by the results. Otherwise, the
+    results will be saved as the name with SUFFIX appended while the original
+    files are not modified and no output goes to STDOUT.
+
+  -h, -help
+    Display this help message.
+END
+
+		exit 1;
+	}
+
+	return ($opt, @ARGV);
+}
+
+sub convert_spaces {
+	my ($opt, $spaces) = @_;
+	my $w = $opt->{width} || 8;
+	$spaces =~ s/\t/' ' x $w/eg;
+	my $len = length($spaces);
+	my $num_tabs = $len / $w;
+	my $num_spaces = $len % $w;
+
+	if ($opt->{adjust}) {
+		return ("\t" x $num_tabs).(' ' x $num_spaces);
+	} else {
+		return "\t" x ($num_tabs + ($num_spaces > 0 ? 1 : 0));
+	}
+}
+
+sub tabify_line {
+	my ($opt, $line) = @_;
+	$line =~ s/^([ \t]+)/convert_spaces($opt, $1)/e;
+	return $line;
+}
+
+sub main {
+	my ($opt, @files) = parse_args();
+
+	if ($opt->{inplace}) {
+		if (defined $opt->{suffix} and $opt->{suffix} ne '') {
+			my $suffix = $opt->{suffix};
+
+			for my $file (@files) {
+				rename $file, $file.$suffix;
+				open OUT, ">$file";
+				open IN, $file.$suffix;
+				print OUT tabify_line($opt, $_) while <IN>;
+				close IN;
+				close OUT;
+			}
+		} else {
+			for my $file (@files) {
+				my ($out, $tmp) = tempfile(DIR => '/tmp', CLEANUP => 1);
+				open IN, $file;
+				print $out tabify_line($opt, $_) while <IN>;
+				$out->flush;
+				close IN;
+
+				if (-f $tmp) {
+					unlink $file;
+					copy $tmp, $file;
+				}
+
+				close $out;
+			}
+		}
+	} else {
+		if (defined $opt->{suffix} and $opt->{suffix} ne '') {
+			my $suffix = $opt->{suffix};
+			
+			for my $file (@files) {
+				open OUT, ">$file$suffix";
+				open IN, $file;
+				print OUT tabify_line($opt, $_) while <IN>;
+				close IN;
+				close OUT;
+			}
+		} else {
+			print tabify_line($opt, $_) while <>;
+		}
+	}
+}
+
+main();

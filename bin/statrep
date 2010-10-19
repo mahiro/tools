@@ -1,0 +1,396 @@
+#!/usr/bin/perl -w
+use strict;
+use FindBin;
+
+BEGIN {
+	my $local = "$FindBin::RealBin/$FindBin::RealScript.local";
+	require $local if -f $local;
+}
+
+use Date::Parse;
+use File::Basename;
+use Getopt::Long;
+use POSIX;
+
+sub convert_strftime {
+	my ($fmt) = @_;
+
+	if ($fmt =~ /^(y?)(m?)(d?)(w?)(h?)(m?)(s?)$/i) {
+		my @ymd = ();
+		push @ymd, '%Y' if $1;
+		push @ymd, '%m' if $2;
+		push @ymd, '%d' if $3;
+
+		my @w = ();
+		push @w, '%a' if $4;
+
+		my @hms = ();
+		push @hms, '%H' if $5;
+		push @hms, '%M' if $6;
+		push @hms, '%S' if $7;
+
+		$fmt = join(' ', join('-', @ymd), @w, join(':', @hms));
+	}
+
+	return $fmt;
+}
+
+sub parse_args {
+	my $opt = {backrefs => [], strftime => []};
+
+	@ARGV = grep {
+		if (/^-+(\d+)$/) {
+			push @{$opt->{backrefs}}, int($1);
+			0;
+		} elsif (/^\+(.*)/) {
+			push @{$opt->{strftime}}, $1;
+			0;
+		} else {
+			1;
+		}
+	} @ARGV;
+
+	GetOptions $opt, qw(
+		preprocess=s evaluate=s regex=s ignorecase global utc shortcut
+		count text numeric first last ascending descending minimum=i
+		help
+	);
+
+	if (!$opt->{shortcut} and @{$opt->{strftime}}) {
+		$_ = convert_strftime($_) foreach @{$opt->{strftime}};
+	}
+
+	if ($opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage:
+  $cmd [OPTIONS] FILES
+  $cmd [OPTIONS] < FILE
+
+Count occurrences for each of distinct lines in STDIN (or file names in args),
+and print a statistical report. Below is an example of the output:
+
+10: This text appears 10 times
+ 8: This text appears 8 times
+ 4: This text appears 4 times
+ 1: This text appears once
+
+Options for line interpretation:
+  -p CODE, -preprocess CODE
+    Convert each line by a perl CODE fragment (\$_ will be input and output of
+    each line)
+
+  -r REGEX, -regex REGEX
+    Apply REGEX to each line, and take only matched lines into account, after
+    any -preprocess conversion (if any).
+
+  -e CODE, -evaluate CODE
+    Convert each line like -preprocess, but after possible -regex option is
+    applied.
+
+  -i, -ignorecase
+    Use case insensitive match for -regex option.
+
+  -0, -1, -2, etc.
+    Use \$&, \$1, \$2, etc. for each -regex REGEX. By default, all the
+    parenthesized groups from \$1 to \$9 will be used, or if no parenthses, \$&
+    is used. If -regex is not specified, -1, -2, etc. will be interpreted as
+    the first, the second, etc. items in each line, respectively.
+
+  +TIMEFORMAT (e.g. +%Y-%m-%d)
+    Convert any text into the strftime format when it can be parsed as time.
+    Some shortcuts are accepted:
+      +ymd is equivalent to '+%Y-%m-%d'
+      +ymdh is equivalent to '+%Y-%m-%d %H'
+    To disable the shortcut reinterpretation, specify -shortcut.
+
+  -u, -utc
+    Use UTC when formatting time.
+
+Options for output ordering:
+  -c, -count (or this is the default ordering)
+    Order by the number of occurrence (default: descending).
+
+  -t, -text
+    Order by each text (default: ascending).
+
+  -n, -numeric
+    Order by each text interpreted as a number (default: ascending).
+
+  -f, -first
+    Order by the first occurrence of each text (default: ascending).
+
+  -l, -last
+    Order by the last occurrence of each text (default: ascending).
+
+  -a, -ascending
+    Ascending order.
+
+  -d, -descending
+    Descending order.
+
+  -m MIN, -minimum MIN
+    Display only entries whose count is at least MIN.
+
+Other:
+  -h, -help
+    Display help.
+
+Examples:
+# In a CSV file, count the second column of each line:
+$cmd -p '(split /,/)[1]' sample.csv
+
+# Count each log level in a log file (assuming the first component in each
+# line is the log level):
+$cmd -r '^(DEBUG|INFO|WARN|ERROR)' sample.log
+
+# Count daily volumens in a Web server's access log:
+$cmd -r '\\S+ \\S+ \\S+ \\[(.*?)\\]' +ymd -t access.log
+
+# Or, same as above, in a shorter way:
+$cmd -4 +ymd -t access.log
+
+# Same as above, plus monthly totals:
+$cmd -4 +ym +ymd -t access.log
+END
+		exit 1;
+	}
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub strip {
+	my ($text) = @_;
+	$text =~ s/^["'\[\(\{\s]+|["'\]\)\}\s]+$//g;
+	return $text;
+}
+
+sub build_stat {
+	my ($opt) = @_;
+
+	my $stat = {};
+	my $pos = 0;
+
+	my @backrefs       = @{$opt->{backrefs}};
+	my @strftime       = @{$opt->{strftime}};
+	my $opt_preprocess = $opt->{preprocess};
+	my $opt_evaluate   = $opt->{evaluate};
+	my $opt_regex      = $opt->{regex};
+	my $opt_ignorecase = $opt->{ignorecase};
+	my $opt_global     = $opt->{global};
+
+	my $maxref = 0;
+	
+	for my $ref (@backrefs) {
+		$maxref = $ref if $maxref < $ref;
+	}
+
+	my %backrefs = map {$_ => 1} @backrefs;
+
+	while (<>) {
+		chomp;
+
+		# Preprocess
+		if (defined $opt_preprocess) {
+			eval $opt_preprocess;
+			defined or next;
+		}
+
+		# Match
+		if (defined $opt_regex) {
+			if ($opt_ignorecase ? /$opt_regex/oi : /$opt_regex/o) {
+				if (@backrefs == 0) {
+					my @values = ();
+
+					for my $i (1..9) {
+						my $value = eval '$'.$i;
+						last if !defined $value;
+						push @values, $value;
+					}
+
+					$_ = \@values;
+				} elsif (@backrefs == 1) {
+					$_ = $backrefs[0] == 0 ? $& : eval '$'.$backrefs[0];
+				} else {
+					$_ = [map {$_ == 0 ? $& : eval '$'.$_} @backrefs];
+				}
+			} else {
+				$_ = undef;
+			}
+
+			defined or next;
+		} elsif (@backrefs) {
+			if ($maxref != 0) {
+				my %values = (0 => $_);
+				my $i = 1;
+
+				while (/"([^"]|\\")*" |
+						'([^']|\\')*' |
+						\[([^\]]|\\\])*\] |
+						\(([^\)]|\\\))*\) |
+						\{([^\}]|\\\})*\} |
+						\S+/xg) {
+					last unless $i <= $maxref;
+
+					if ($backrefs{$i}) {
+						$values{$i} = $&;
+					}
+
+					$i++;
+				}
+
+				$_ = [map {$values{$_}} @backrefs];
+			}
+		}
+
+		# Postprocess
+		if (defined $opt_evaluate) {
+			eval $opt_evaluate;
+			defined or next;
+		}
+
+		# Accumulate data
+		my $entry;
+
+		for my $key (ref $_ eq 'ARRAY' ? @$_ : $_) {
+			my @internal_keys = ($key);
+
+			if (@strftime) {
+				my $time = str2time(strip($key));
+
+				if (defined $time) {
+					my @time = ($opt->{utc} ? gmtime($time) : localtime($time));
+					@internal_keys = map {strftime($_, @time)} @strftime;
+				}
+			}
+
+			for my $internal_key (@internal_keys) {
+				if (!defined $entry) {
+					$entry = ($stat->{$internal_key} ||= {cnt => 0, pos => $pos});
+				} else {
+					my $children = ($entry->{children} ||= {});
+					$entry = ($children->{$internal_key} ||= {cnt => 0, pos => $pos});
+				}
+
+				my $cnt = ++$entry->{cnt};
+				$entry->{pos} = $pos if $opt->{last};
+			}
+		}
+
+		$pos++;
+	}
+
+	return $stat;
+}
+
+sub analyze_indents {
+	my ($stat, $opt, $depth) = @_;
+
+	# Get the max length of counts to display, at each depth level.
+	my $indents = [];
+	analyze_indents_internal($stat, $indents, $opt, 0);
+
+	# Add up each level length, so that each depth is indented properly.
+	my $next = 0;
+
+	for my $indent (@$indents) {
+		$indent += $next;
+		$next = $indent + 2;
+		# Adjust the indent so the next level of each is alighed after the
+		# colon followed by a space.
+		# 
+		# 1000: 1st one at 1st level (max length at 1st level is 4 here)
+		#  100: 2nd one at 1st level (and the indent level is also 4)
+		#       100: 1st one at 2nd level (max length is 3 here)
+		#        10: 2nd one at 2nd level (and the indent level is 9)
+	}
+
+	return $indents;
+}
+
+sub analyze_indents_internal {
+	my ($stat, $indents, $opt, $depth) = @_;
+
+	# Get the max length at the level of $depth
+	my $max = 0;
+
+	for my $key (keys %$stat) {
+		my $cnt = $stat->{$key}{cnt};
+		$max = $cnt if $max < $cnt;
+	}
+
+	my $len = length("$max");
+	$indents->[$depth] = $len if ($indents->[$depth] || 0) < $len;
+
+	# Traverse children recursively
+	for my $key (keys %$stat) {
+		if (exists $stat->{$key}{children}) {
+			analyze_indents_internal($stat->{$key}{children}, $indents, $opt, $depth + 1);
+		}
+	}
+
+	return $indents;
+}
+
+sub display_stat {
+	my ($stat, $indents, $opt, $depth) = @_;
+
+	# Sort keys (texts)
+	my @keys;
+
+	if (!$opt->{count}) {
+		if ($opt->{text} or $opt->{numeric}) {
+			if ($opt->{descending} and !$opt->{ascending}) {
+				if ($opt->{numeric}) {
+					@keys = sort {$b <=> $a} keys %$stat;
+				} else {
+					@keys = sort {$b cmp $a} keys %$stat;
+				}
+			} else {
+				if ($opt->{numeric}) {
+					@keys = sort {$a <=> $b} keys %$stat;
+				} else {
+					@keys = sort {$a cmp $b} keys %$stat;
+				}
+			}
+		} elsif ($opt->{first} or $opt->{last}) {
+			if ($opt->{descending} and !$opt->{ascending}) {
+				@keys = sort {$stat->{$b}{pos} <=> $stat->{$a}{pos}} keys %$stat;
+			} else {
+				@keys = sort {$stat->{$a}{pos} <=> $stat->{$b}{pos}} keys %$stat;
+			}
+		}
+	}
+
+	if (!@keys) {
+		if ($opt->{ascending} and !$opt->{descending}) {
+			@keys = sort {$stat->{$a}{cnt} <=> $stat->{$b}{cnt} || $a cmp $b} keys %$stat;
+		} else {
+			@keys = sort {$stat->{$b}{cnt} <=> $stat->{$a}{cnt} || $b cmp $a} keys %$stat;
+		}
+	}
+
+	my $fmt = '%'.$indents->[$depth].'d';
+
+	# Output
+	for (@keys) {
+		if (!defined $opt->{minimum} or $stat->{$_}{cnt} >= $opt->{minimum}) {
+			printf $fmt, $stat->{$_}{cnt};
+			print ': ', $_, "\n";
+
+			if (exists $stat->{$_}{children}) {
+				display_stat($stat->{$_}{children}, $indents, $opt, $depth + 1);
+			}
+		}
+	}
+}
+
+sub main {
+	my $opt = parse_args();
+	my $stat = build_stat($opt);
+	my $indents = analyze_indents($stat, $opt, 0);
+	display_stat($stat, $indents, $opt, 0);
+}
+
+main();

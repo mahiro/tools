@@ -17,6 +17,7 @@ use POSIX;
 
 sub parse_args {
 	my $opt = {};
+
 	GetOptions $opt, qw(
 		directory=s path=s
 		gmt mtime
@@ -104,15 +105,30 @@ sub move_file {
 			strftime($path, gmtime $time) :
 			strftime($path, localtime $time));
 
+	my $dst_dir = "$absdir/$dst";
+	my $dst_file = "$dst_dir/".basename($file);
+
+	if (-e $dst_file) {
+		if ($opt->{interactive}) {
+			print "$dst_file already exists. Overwrite? [y/N] ";
+			STDOUT->flush;
+			return if <STDIN> !~ /^y/i;
+		} else {
+			print STDERR "$dst_file: already exists\n";
+			return;
+		}
+	}
+
 	if ($opt->{interactive}) {
 		print "$dst: $file: Archive? [y/N] ";
 		STDOUT->flush;
 		return if <STDIN> !~ /^y/i;
 	}
 
-	mkpath "$absdir/$dst" if !-d "$absdir/$dst";
-	print "mv $file $dir/$dst\n" if $opt->{verbose};
-	rename $file, "$absdir/$dst/".basename($file);
+	mkpath $dst_dir if !-d $dst_dir;
+
+	print "mv $file $dst_file\n" if $opt->{verbose};
+	rename $file, $dst_file;
 }
 
 sub main {
