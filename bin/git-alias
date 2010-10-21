@@ -1,0 +1,8 @@
+#!/bin/sh
+# Ref: https://git.wiki.kernel.org/index.php/Aliases
+if [[ $# = 2 ]]; then
+	git config --global alias."$1" "$2"
+else
+	echo "usage: git alias <new_alias> <original_command>"
+	exit 1
+fi

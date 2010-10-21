@@ -1,0 +1,228 @@
+#!/usr/bin/perl -w
+use strict;
+
+use Cwd qw(abs_path);
+use File::Basename;
+use File::Copy;
+use File::Spec;
+use Getopt::Long;
+
+sub parse_args {
+	my $opt = {};
+
+	GetOptions $opt, qw(prefix=s copy dryrun quiet verbose help) or die $!;
+
+	if (@ARGV < 1 or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] SRC_DIRS_OR_FILES..
+
+Options:
+  -p PREFIX, -prefix PREFIX
+    Use PREFIX as the target install directory. Default = HOME.
+
+  -c, -copy
+    Copy files instead of creating symlinks by default.
+
+  -d, -dryrun
+    Do not actually install any files.
+
+  -q, -quiet
+    Suppress output except for errors.
+
+  -v, -verbose
+    Report skipped files.
+
+  -h, -help
+    Display help.
+END
+
+		exit 1;
+	}
+
+	return ($opt, @ARGV);
+}
+
+sub normalize {
+	my ($opt, $orig_dir, $type) = @_;
+
+	my $dir = abs_path($orig_dir);
+	$dir =~ s{/+$}{};
+
+	my $alt = $orig_dir;
+	$alt =~ s{/+$}{};
+
+	if ($dir !~ m{/bin$}) {
+		$dir .= "/bin";
+		$alt .= "/bin";
+	}
+
+	unless (-d $dir) {
+		do_error($opt, $orig_dir, "$type bin directory not found");
+		exit 1;
+	}
+
+	return ($dir, $alt);
+}
+
+sub relpath {
+	my ($opt, $src, $dst) = @_;
+	my $path;
+	$path = File::Spec->abs2rel($src, $dst) unless $opt->{copy};
+	return $path;
+}
+
+sub do_overwrite {
+	my ($opt, $src_name, $dst_name, $alt_name) = @_;
+
+	unless ($opt->{quiet}) {
+		print "dryrun: " if $opt->{dryrun};
+		print "overwriting $alt_name\n";
+	}
+
+	unless ($opt->{dryrun}) {
+		my $tmp_name = "$dst_name.tmp";
+		copy $src_name, $tmp_name;
+		unlink $dst_name;
+		rename $tmp_name, $dst_name;
+	}
+}
+
+sub do_copy {
+	my ($opt, $src_name, $dst_name, $alt_name) = @_;
+
+	unless ($opt->{quiet}) {
+		print "dryrun: " if $opt->{dryrun};
+		print "copying $alt_name\n";
+	}
+
+	unless ($opt->{dryrun}) {
+		copy $src_name, $dst_name;
+	}
+}
+
+sub do_unlink {
+	my ($opt, $dst_name, $alt_name) = @_;
+
+	unless ($opt->{quiet}) {
+		print "dryrun: " if $opt->{dryrun};
+		print "removing $alt_name\n";
+	}
+
+	unless ($opt->{dryrun}) {
+		unlink $dst_name;
+	}
+}
+
+sub do_symlink {
+	my ($opt, $path_name, $dst_name, $alt_name) = @_;
+
+	unless ($opt->{quiet}) {
+		print "dryrun: " if $opt->{dryrun};
+		print "symlinking $alt_name";
+		print " -> $path_name" if $opt->{verbose};
+		print "\n";
+	}
+
+	unless ($opt->{dryrun}) {
+		symlink $path_name, $dst_name;
+	}
+}
+
+sub do_skip {
+	my ($opt, $alt_name, $msg) = @_;
+
+	if ($opt->{verbose} and !$opt->{quiet}) {
+		print "dryrun: " if $opt->{dryrun};
+		print "skipping $alt_name: $msg\n";
+	}
+}
+
+sub do_error {
+	my ($opt, $alt_name, $msg) = @_;
+
+	if ($opt->{quiet}) {
+		print STDERR "$alt_name: $msg\n";
+	} else {
+		print "error: $alt_name: $msg\n";
+	}
+}
+
+sub install {
+	my ($opt, $src, $dst, $alt, $name, $path) = @_;
+	my $src_name = "$src/$name";
+	my $dst_name = "$dst/$name";
+	my $alt_name = "$alt/$name";
+
+	if (-l $dst_name) {
+		if ($opt->{copy}) {
+			do_overwrite $opt, $src_name, $dst_name, $alt_name;
+		} else {
+			if ("$path/$name" ne readlink $dst_name) {
+				do_unlink $opt, $dst_name, $alt_name;
+				do_symlink $opt, "$path/$name",
+					$dst_name, $alt_name;
+			} else {
+				do_skip $opt, $alt_name,
+					'symlink already exists';
+			}
+		}
+	} elsif (-f $dst_name) {
+		if ($opt->{copy}) {
+			if ((stat $src_name)[9] > (stat $dst_name)[9]) {
+				do_overwrite $opt, $src_name,
+					$dst_name, $alt_name;
+			} else {
+				do_skip $opt, $alt_name, 'not updated';
+			}
+		} else {
+			do_error $opt, $alt_name, 'already exists';
+		}
+	} elsif (-d $dst_name) {
+		do_error $opt, $alt_name, 'is a directory';
+	} else {
+		if ($opt->{copy}) {
+			do_copy $opt, $src_name, $dst_name, $alt_name;
+		} else {
+			do_symlink $opt, "$path/$name", $dst_name, $alt_name;
+		}
+	}
+}
+
+sub main {
+	my ($opt, @src_items) = parse_args();
+
+	my $prefix = defined $opt->{prefix} ? $opt->{prefix} : $ENV{HOME};
+	my ($dst, $alt) = normalize($opt, $prefix, 'target');
+
+	unless (defined $opt->{prefix}) {
+		$alt =~ s/^$ENV{HOME}/~/;
+	}
+
+	for my $src_item (@src_items) {
+		if (-f $src_item) {
+			my $src_dir = dirname($src_item);
+			my $name = basename($src_item);
+			my ($src) = normalize($opt, $src_dir, 'source');
+			my $path = relpath($opt, $src, $dst);
+			install($opt, $src, $dst, $alt, $name, $path);
+		} else {
+			my $src_dir = $src_item;
+			my ($src) = normalize($opt, $src_dir, 'source');
+			my $path = relpath($opt, $src, $dst);
+
+			opendir DIR, $src or die "$src: $!";
+
+			while (my $name = readdir DIR) {
+				next if $name =~ m{^\.|\.local$};
+				next unless -f "$src/$name" and -x "$src/$name";
+				install($opt, $src, $dst, $alt, $name, $path);
+			}
+
+			closedir DIR;
+		}
+	}
+}
+
+main();
