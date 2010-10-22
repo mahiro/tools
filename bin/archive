@@ -46,6 +46,9 @@ Options:
   -g, -gmt
     Use GMT intead of local time.
 
+  -m, -mtime
+    Always use each file's mtime instead of trying to interpret the file name.
+
   -o TIMESPAN, -older TIMESPAN
     Only archive files older than the specified time span (or a specific time).
 
@@ -126,16 +129,19 @@ sub make_time {
 
 sub get_time {
 	my ($opt, $file) = @_;
-	my $base = basename($file);
 
-	if ($base =~ /\b(\d{4})(\d{2})(\d{2})[\-\._]?(\d{2})(\d{2})(\d{2})\b/) {
-		return make_time($opt, $1, $2, $3, $4, $5, $6);
-	} elsif ($base =~ /\b(\d{4})[\-\._](\d{2})[\-\._](\d{2})[\-\._](\d{2})[\-\._](\d{2})[\-\._](\d{2})\b/) {
-		return make_time($opt, $1, $2, $3, $4, $5, $6);
-	} elsif ($base =~ /\b(\d{4})(\d{2})(\d{2})\b/) {
-		return make_time($opt, $1, $2, $3, 0, 0, 0);
-	} elsif ($base =~ /\b(\d{4})[\-\._](\d{2})[\-\._](\d{2})\b/) {
-		return make_time($opt, $1, $2, $3, 0, 0, 0);
+	unless ($opt->{mtime}) {
+		my $base = basename($file);
+
+		if ($base =~ /\b(\d{4})(\d{2})(\d{2})[\-\._]?(\d{2})(\d{2})(\d{2})\b/) {
+			return make_time($opt, $1, $2, $3, $4, $5, $6);
+		} elsif ($base =~ /\b(\d{4})[\-\._](\d{2})[\-\._](\d{2})[\-\._](\d{2})[\-\._](\d{2})[\-\._](\d{2})\b/) {
+			return make_time($opt, $1, $2, $3, $4, $5, $6);
+		} elsif ($base =~ /\b(\d{4})(\d{2})(\d{2})\b/) {
+			return make_time($opt, $1, $2, $3, 0, 0, 0);
+		} elsif ($base =~ /\b(\d{4})[\-\._](\d{2})[\-\._](\d{2})\b/) {
+			return make_time($opt, $1, $2, $3, 0, 0, 0);
+		}
 	}
 
 	return ((stat $file)[9]);
