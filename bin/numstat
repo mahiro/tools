@@ -123,14 +123,14 @@ sub main {
 					/gx) {
 				last if $c > $maxcol;
 				
-				if ($cols{$c} and $& =~ /((\d*\.)?\d+)/) {
+				if ($cols{$c} and $& =~ /(-?(\d*\.)?\d+)/) {
 					&$update($1);
 				}
 
 				$c++;
 			}
 		} else {
-			while ($line =~ /((\d*\.)?\d+)/g) {
+			while ($line =~ /(-?(\d*\.)?\d+)/g) {
 				&$update($1);
 			}
 		}
@@ -187,7 +187,8 @@ sub main {
 			my $value;
 
 			if (defined $values{$target}) {
-				$value = sprintf('%g', $values{$target});
+#				$value = sprintf('%g', $values{$target});
+				$value = $values{$target};
 			} else {
 				$value = 'undefined';
 			}
