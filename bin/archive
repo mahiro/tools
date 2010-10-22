@@ -8,7 +8,9 @@ BEGIN {
 }
 
 use Cwd qw(abs_path);
+use Date::Parse;
 use DateTime;
+use DateTime::Format::Duration;
 use File::Basename;
 use File::Path;
 use Getopt::Long;
@@ -20,9 +22,9 @@ sub parse_args {
 
 	GetOptions $opt, qw(
 		directory=s path=s
-		gmt mtime
+		gmt mtime older=s
 		force interactive verbose
-		help
+		show help
 	) or die $!;
 
 	if ($opt->{help}) {
@@ -44,6 +46,9 @@ Options:
   -g, -gmt
     Use GMT intead of local time.
 
+  -o TIMESPAN, -older TIMESPAN
+    Only archive files older than the specified time span (or a specific time).
+
   -f, -force
     Skip the confirmation step at the beginning.
 
@@ -53,14 +58,52 @@ Options:
   -v, -verbose
     Print each moved file.
 
+  -s, -show
+    Print the list of files to archive and exit.
+
   -h, -help
-    Display help.
+    Print help and exit.
 END
 
 		exit 1;
 	}
 
+	$opt->{older} = parse_timespan($opt->{older}) if defined $opt->{older};
 	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub parse_timespan {
+	my ($input) = @_;
+
+	if ($input =~ /^\s*(\d+)\s*$/) {
+		die "time unit must be provided: $input";
+	} elsif ($input =~ /^\s*(\d+|\d*\.\d+)\s*(\w+)\s*$/) {
+		my ($num, $unit) = ($1, lc($2));
+		my $d;
+
+		if ($unit =~ /^y((ea)?r)?s?$/) {
+			$d = DateTime::Duration->new(years => $num);
+		} elsif ($unit =~ /^mo(n(th)?)?s?$/) {
+			$d = DateTime::Duration->new(months => $num);
+		} elsif ($unit =~ /^w(ee)?k?s?$/) {
+			$d = DateTime::Duration->new(weeks => $num);
+		} elsif ($unit =~ /^da?y?s?$/) {
+			$d = DateTime::Duration->new(days => $num);
+		} elsif ($unit =~ /^h(ou)?r?s?$/) {
+			$d = DateTime::Duration->new(hours => $num);
+		} elsif ($unit =~ /^m(i(n(ute)?)?)?s?$/) {
+			$d = DateTime::Duration->new(minutes => $num);
+		} elsif ($unit =~ /^s(e(c(ond)?)?)?s?$/) {
+			$d = DateTime::Duration->new(seconds => $num);
+		} else {
+			die "cannot parse time span: $input";
+		}
+
+		my $dt = DateTime->now;
+		return $dt->subtract_duration($d)->epoch;
+	} else {
+		return str2time($input);
+	}
 }
 
 sub should_move {
@@ -131,6 +174,20 @@ sub move_file {
 	rename $file, $dst_file;
 }
 
+sub show_files {
+	my ($opt, $plan, $path) = @_;
+
+	for my $file (sort {$plan->{$a} <=> $plan->{$b}} keys %$plan) {
+		my $time = $plan->{$file};
+
+		my $dst = ($opt->{gmt} ?
+				strftime($path, gmtime $time) :
+				strftime($path, localtime $time));
+
+		print "$dst: $file\n";
+	}
+}
+
 sub main {
 	my ($opt, @files) = parse_args();
 
@@ -139,7 +196,6 @@ sub main {
 	my $absdir = abs_path($dir);
 
 	my $path = defined $opt->{path} ? $opt->{path} : '%Y/%m/%d';
-
 	@files = <./*> if @files == 0; # do not include '.*' unless dotglob is on
 
 	# Make plan
@@ -147,8 +203,17 @@ sub main {
 
 	for my $file (@files) {
 		if (should_move($file, $absdir)) {
-			$plan->{$file} = get_time($opt, $file);
+			my $time = get_time($opt, $file);
+
+			if (!defined $opt->{older} or $time < $opt->{older}) {
+				$plan->{$file} = $time;
+			}
 		}
+	}
+
+	if ($opt->{show}) {
+		show_files($opt, $plan, $path);
+		exit;
 	}
 
 	# Confirm
@@ -160,14 +225,34 @@ sub main {
 	}
 
 	unless ($opt->{force}) {
+		print "Number of files to move: $num_files\n";
 		print "Destination: $dir/$path\n";
 		print "(Directory will be created)\n" unless -d $dir;
-		print "Number of files to move: $num_files\n";
-		print "\n";
-		print "Proceed? [y/N] ";
-		STDOUT->flush;
 
-		if (<STDIN> !~ /^y/i) {
+		if (defined $opt->{older}) {
+			print "Older than: ".strftime('%F %T', localtime($opt->{older}))."\n";
+		}
+
+		print "\n";
+		print "Proceed? [yes/*no/show] ";
+		STDOUT->flush;
+		my $answer = <STDIN>;
+		my $proceed = 0;
+
+		if ($answer =~ /^y/i) {
+			$proceed = 1;
+		} elsif ($answer =~ /^s/i) {
+			print "\n";
+			show_files($opt, $plan, $path);
+			print "\n";
+
+			print "Proceed? [yes/*no] ";
+			STDOUT->flush;
+			$answer = <STDIN>;
+			$proceed = ($answer =~ /^y/i);
+		}
+
+		unless ($proceed) {
 			print "Canceled\n";
 			exit 1;
 		}
