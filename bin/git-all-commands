@@ -1,0 +1,2 @@
+#!/bin/sh
+find /usr/local/share/man/man1 -name 'git-*' -exec basename {} \; | sort | less
