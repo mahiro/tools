@@ -24,6 +24,7 @@ sub parse_args {
 		total   sum
 		average mean
 		stdev   sigma
+		order
 		regex=s
 		quiet
 		help
@@ -61,6 +62,9 @@ Options:
   -stdev, -sigma
     Display the standard deviation of the sample values.
 
+  -order
+    Display the type of order (increasing, decreasing, etc.).
+
   -quiet
     Display only the result value(s). Do not display the label(s).
 
@@ -77,6 +81,7 @@ END
 sub main {
 	my $opt = parse_args();
 
+	# Configure parameters
 	my @cols = @{$opt->{cols}};
 	my %cols = map {$_ => 1} @cols;
 	my $maxcol = 0;
@@ -85,11 +90,17 @@ sub main {
 		$maxcol = $col if $maxcol < $col;
 	}
 
+	# Prepare stat variables and procedure
 	my $sum = 0;
 	my $sumsq = 0;
 	my $num = 0;
 	my $min;
 	my $max;
+
+	my $prev;
+	my $cnt_equal = 0;
+	my $cnt_incr = 0;
+	my $cnt_decr = 0;
 
 	my $update = sub {
 		my ($x) = @_;
@@ -98,8 +109,21 @@ sub main {
 		$num++;
 		$min = $x if !defined $min or $min > $x;
 		$max = $x if !defined $max or $max < $x;
+
+		if (defined $prev) {
+			if ($x == $prev) {
+				$cnt_equal++;
+			} elsif ($x > $prev) {
+				$cnt_incr++;
+			} else {
+				$cnt_decr++;
+			}
+		}
+
+		$prev = $x;
 	};
 
+	# Read input
 	while (my $line = <>) {
 		if (defined $opt->{regex}) {
 			if ($line =~ /$opt->{regex}/o) {
@@ -136,6 +160,7 @@ sub main {
 		}
 	}
 
+	# Calculate results
 	my $mean;
 	my $variance;
 	my $stdev;
@@ -144,13 +169,14 @@ sub main {
 	$variance = $sumsq / $num - $mean * $mean if $num > 0;
 	$stdev = sqrt($variance) if $num > 0;
 
-	my @targets = qw(count low high sum average stdev);
+	# Prepare output
+	my @targets = qw(count low high sum average stdev order);
 
 	my %values = (
 		count   => $num,
 		low     => $min,
 		high    => $max,
-		sum   => $sum,
+		sum     => $sum,
 		average => $mean,
 		stdev   => $stdev
 	);
@@ -182,7 +208,8 @@ sub main {
 	$maxlen++;
 	my $fmt = "%-".$maxlen."s %s\n";
 
-	for my $target (@targets) {
+	# Generate output
+	for my $target (grep {$_ ne 'order'} @targets) {
 		if ($opt->{$target} or !$any) {
 			my $value;
 
@@ -198,6 +225,49 @@ sub main {
 			} else {
 				printf $fmt, uc($target).':', $value;
 			}
+		}
+	}
+
+	if ($opt->{order} or !$any) {
+		my $order;
+
+		if ($cnt_equal == 0) {
+			if ($cnt_incr == 0) {
+				if ($cnt_decr == 0) {
+					$order = "nothing";
+				} else {
+					$order = "strictly decreasing";
+				}
+			} else {
+				if ($cnt_decr == 0) {
+					$order = "strictly increasing";
+				} else {
+					$order = "unsorted, non-consecutive";
+				}
+			}
+		} else {
+			if ($cnt_incr == 0) {
+				if ($cnt_decr == 0) {
+					$order = "all equal";
+				} else {
+					$order = "non-increasing";
+				}
+			} else {
+				if ($cnt_decr == 0) {
+					$order = "non-decreasing";
+				} else {
+					$order = "unsorted";
+				}
+			}
+		}
+
+		if ($opt->{quiet}) {
+			print $order, "\n";
+		} else {
+			printf $fmt, 'ORDER:', $order;
+			printf $fmt, '- EQUAL:', $cnt_equal;
+			printf $fmt, '- INCR:', $cnt_incr;
+			printf $fmt, '- DECR:', $cnt_decr;
 		}
 	}
 }
