@@ -1,0 +1,5 @@
+#!/bin/sh
+# Include all branches and any orphan commits
+git-log-graph --all \
+	`git fsck --lost-found | grep "dangling commit" | colrm 1 16` \
+	"$@"

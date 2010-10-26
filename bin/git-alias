@@ -1,6 +1,10 @@
 #!/bin/sh
 # Ref: https://git.wiki.kernel.org/index.php/Aliases
-if [[ $# = 2 ]]; then
+if [[ $# = 0 ]]; then
+	git config --get-regexp 'alias\..*' | colrm 1 6 | sed 's/[ ]/ = /'
+elif [[ $# = 1 ]]; then
+	git config --get-regexp "alias\.$1" | colrm 1 6 | sed 's/[ ]/ = /'
+elif [[ $# = 2 ]]; then
 	git config --global alias."$1" "$2"
 else
 	echo "usage: git alias <new_alias> <original_command>"
