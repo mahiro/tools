@@ -1,5 +1,0 @@
-#!/bin/sh
-find /usr/local/share/man/man1 -name 'git-*' -exec basename {} \; | \
-	perl -pe 's/\.1$//' | \
-	sort | \
-	less

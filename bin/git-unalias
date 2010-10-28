@@ -1,8 +1,0 @@
-#!/bin/sh
-# Ref: https://git.wiki.kernel.org/index.php/Aliases
-if [[ $# = 1 ]]; then
-	git config --global --unset alias."$1"
-else
-	echo "usage: git unalias <old_alias>"
-	exit 1
-fi

@@ -1,3 +1,0 @@
-#!/bin/sh
-# Ref: https://git.wiki.kernel.org/index.php/Aliases
-git config --get-regexp 'alias.*' | colrm 1 6 | sed 's/[ ]/ = /'

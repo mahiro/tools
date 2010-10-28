@@ -1,7 +1,0 @@
-#!/bin/sh
-# Ref: https://git.wiki.kernel.org/index.php/Aliases
-git log --graph \
-	--pretty=format:'%C(yellow)%h%C(reset) -%C(green)%d%C(reset) %s %C(red)(%cr) %C(bold blue)<%an>%Creset' \
-	--abbrev-commit \
-	--date=relative \
-	"$@"
