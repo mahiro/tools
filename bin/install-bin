@@ -10,9 +10,11 @@ use Getopt::Long;
 sub parse_args {
 	my $opt = {};
 
-	GetOptions $opt, qw(prefix=s copy dryrun quiet verbose help) or die $!;
+	GetOptions $opt, qw(
+		prefix=s copy dryrun gc quiet verbose help
+	) or die $!;
 
-	if (@ARGV < 1 or $opt->{help}) {
+	if ((!$opt->{gc} and @ARGV < 1) or $opt->{help}) {
 		my $cmd = basename($0);
 
 		print <<END;
@@ -33,6 +35,9 @@ Options:
 
   -v, -verbose
     Report skipped files.
+
+  -g, -gc
+    Perform garbage collection (clean up broken symlinks).
 
   -h, -help
     Display help.
@@ -222,6 +227,21 @@ sub main {
 
 			closedir DIR;
 		}
+	}
+
+	if ($opt->{gc}) {
+		opendir DIR, $dst or die "$dst: $!";
+
+		while (my $name = readdir DIR) {
+			next if $name =~ m{^\.};
+			my $dst_name = "$dst/$name";
+
+			if (-l $dst_name and !-e $dst_name) {
+				do_unlink($opt, $dst_name, "$alt/$name");
+			}
+		}
+
+		closedir DIR;
 	}
 }
 
