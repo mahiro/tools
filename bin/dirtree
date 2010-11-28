@@ -8,7 +8,7 @@ use Getopt::Long;
 
 sub parse_args {
 	my $opt = {};
-	@ARGV = map {/--?d?(\d+)/ ? ('-depth' => int($1)) : $_} @ARGV;
+	@ARGV = map {/^--?d?(\d+)$/ ? ('-depth' => int($1)) : $_} @ARGV;
 
 	GetOptions $opt, qw(
 		all files depth=i maxentries=i nofollowlinks
