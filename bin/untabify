@@ -30,7 +30,7 @@ options:
   -i, -inplace
     Replace the specified files.
 
-  -s, -suffix SUFFIX
+  -s SUFFIX, -suffix SUFFIX
     If -inplace is turned on, the original files will be saved as the name with
     SUFFIX appended while FILES are replaced by the results. Otherwise, the
     results will be saved as the name with SUFFIX appended while the original
@@ -67,15 +67,18 @@ sub main {
 			my $suffix = $opt->{suffix};
 
 			for my $file (@files) {
+				my $mode = (stat $file)[2];
 				rename $file, $file.$suffix;
 				open OUT, ">$file";
 				open IN, $file.$suffix;
 				print OUT untabify_line($opt, $_) while <IN>;
 				close IN;
 				close OUT;
+				chmod $mode, $file;
 			}
 		} else {
 			for my $file (@files) {
+				my $mode = (stat $file)[2];
 				my ($out, $tmp) = tempfile(DIR => '/tmp', CLEANUP => 1);
 				open IN, $file;
 				print $out untabify_line($opt, $_) while <IN>;
@@ -85,6 +88,7 @@ sub main {
 				if (-f $tmp) {
 					unlink $file;
 					copy $tmp, $file;
+					chmod $mode, $file;
 				}
 
 				close $out;
@@ -95,11 +99,13 @@ sub main {
 			my $suffix = $opt->{suffix};
 			
 			for my $file (@files) {
+				my $mode = (stat $file)[2];
 				open OUT, ">$file$suffix";
 				open IN, $file;
 				print OUT untabify_line($opt, $_) while <IN>;
 				close IN;
 				close OUT;
+				chmod $mode, "$file$suffix";
 			}
 		} else {
 			print untabify_line($opt, $_) while <>;
