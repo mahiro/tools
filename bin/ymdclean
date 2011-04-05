@@ -1,0 +1,317 @@
+#!/usr/bin/perl -w
+use strict;
+use FindBin;
+
+BEGIN {
+	my $local = "$FindBin::RealBin/$FindBin::RealScript.local";
+	require $local if -f $local;
+}
+
+use Data::Dumper;
+use DateTime;
+use File::Basename;
+use File::Path;
+use Getopt::Long;
+use YAML::XS;
+
+use constant YEAR   => 0;
+use constant MONTH  => 1;
+use constant DAY    => 2;
+use constant HOUR   => 3;
+use constant MINUTE => 4;
+use constant SECOND => 5;
+
+use constant NAMELIST => [qw(year month day hour minute second)];
+
+sub parse_args {
+	my $opt = {};
+
+	GetOptions $opt, qw(
+		retention=s depth=s timezone=s suffix=s
+		list verbose help
+	) or die $!;
+
+	if (@ARGV < 1 or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] BASE_DIR..
+
+Clean up directories or files under the target BASE_DIR's. A config file
+".ymdclean" can be placed under each of the target directories. This
+program is best used as a cron job.
+
+By default, the directory hierarchy under the target directory is assumed
+to be in "YYYY/MM/DD" format in GMT. Any directories (or files) that
+represent "days" older than the retention time specified in the config
+will be deleted.
+
+If an upper directory in the date/time path becomes empty as a result of 
+cleaning up child directories/files, the empty directory will also be removed.
+(The removal will not take place for the top-most BASE_DIR's.)
+
+The .ymdclean config file is a YAML format with the following values:
+  retention:
+    Specifies the retention time.
+    Examples: "3 months", "1 week", "5 days", etc.
+    Note: "1m" will be interpreted as "1 month" instead of "1 minute".
+
+  depth:
+    Specifies the depth of the directory hierarchy of date/time.
+    Examples: "year", "month", "day", "hour", "minute", "second"
+    Default: "day"
+
+  timezone:
+    Specifies the timezone. If it is set as "local", the local time will be 
+    used.
+    Default: "GMT"
+
+  suffix:
+    Specifies an optional suffix for the peripheral directory/file.
+    For example, if the date path looks like "2010/01/01.log" where the depth
+    is "day", specify the suffix as ".log".
+
+Options:
+  -list
+    Perform a dry-run without deleting anything; report what would be deleted
+    instead.
+
+  -verbose
+    Report each path being deleted.
+
+  -help
+    Display help.
+
+Note:
+  If any of the config fields are specified as options, they will be used as
+  default values.
+END
+
+		exit 1;
+	}
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub get_config {
+	my ($dir) = @_;
+	my $file = "$dir/.ymdclean";
+	my $text = '';
+
+	if (open IN, $file) {
+		local $/;
+		$text = <IN>;
+		close IN;
+	}
+
+	return Load($text);
+}
+
+sub parse_retention {
+	my ($dir, $retention, $timezone) = @_;
+
+	if (!$retention) {
+		die "$dir: retention is required";
+	}
+
+	my $dt = $timezone =~ /^local(time(zone)?)?$/i ?
+		DateTime->now() :
+		DateTime->now(time_zone => $timezone);
+
+	my $d;
+
+	if ($retention =~ /^\s*(\d+(\.\d*)?|\.\d+)\s*(\w*)\s*$/) {
+		my $num = $1 + 0;
+		my $unit_name = $3;
+
+		if (!$unit_name) {
+			$d = DateTime::Duration->new(seconds => $num);
+		} elsif ($unit_name =~ /^(y|yr|year)s?$/i) {
+			$d = DateTime::Duration->new(years => $num);
+		} elsif ($unit_name =~ /^(m|mo|mon|month)s?$/i) {
+			$d = DateTime::Duration->new(months => $num);
+		} elsif ($unit_name =~ /^(w|wk|week)s?$/i) {
+			$d = DateTime::Duration->new(weeks => $num);
+		} elsif ($unit_name =~ /^(d|da|day)s?$/i) {
+			$d = DateTime::Duration->new(days => $num);
+		} elsif ($unit_name =~ /^(h|ho|hr|hour)s?/i) {
+			$d = DateTime::Duration->new(hours => $num);
+		} elsif ($unit_name =~ /^(m|mi|min|minute)s?/i) {
+			$d = DateTime::Duration->new(minutes => $num);
+		} elsif ($unit_name =~ /^(s|se|sec|second)s?/i) {
+			$d = DateTime::Duration->new(seconds => $num);
+		} else {
+			die "$dir: invalid unit in retention: $retention";
+		}
+	}
+
+	return ($dt - $d)->epoch;
+}
+
+sub parse_depth {
+	my ($dir, $depth) = @_;
+
+	if (!$depth) {
+		return DAY;
+	}
+
+	$depth =~ s/^\s*|\s*$//g;
+
+	if ($depth =~ /^(y|yr|year)s?$/i) {
+		return YEAR;
+	} elsif ($depth =~ /^(m|mo|mon|month)s?$/i) {
+		return MONTH;
+	} elsif ($depth =~ /^(d|da|day)s?$/i) {
+		return DAY;
+	} elsif ($depth =~ /^(h|ho|hr|hour)s?/i) {
+		return HOUR;
+	} elsif ($depth =~ /^(m|mi|min|minute)s?/i) {
+		return MINUTE;
+	} elsif ($depth =~ /^(s|se|sec|second)s?/i) {
+		return SECOND;
+	} else {
+		die "$dir: invalid depth: $depth";
+	}
+}
+
+sub each_entry {
+	my ($dir, $callback) = @_;
+
+	opendir DIR, $dir or die "$dir: $!";
+
+	while (my $entry = readdir DIR) {
+		next if $entry =~ m{^\.\.?$};
+		&$callback($entry);
+	}
+
+	closedir DIR;
+}
+
+sub clean_target {
+	my ($opt, $target) = @_;
+
+	if ($opt->{list}) {
+		print "dryrun: $target\n";
+		return 1;
+	} else {
+		print "deleting: $target\n" if $opt->{verbose};
+
+		if (-f $target || -l $target) {
+			return unlink($target);
+		} else {
+			return rmtree($target);
+		}
+	}
+}
+
+sub clean_recursive {
+	my ($opt, $parent_dir, $config, $depth, $values) = @_;
+	$depth ||= YEAR;
+	$values ||= [];
+
+	my @deletables = ();
+
+	opendir DIR, $parent_dir or die "$parent_dir: $!";
+
+	while (my $entry = readdir DIR) {
+		next if $entry =~ m{^\.\.?$};
+
+		my $num;
+
+		if ($config->{depth} == $depth && $config->{suffix}) {
+			if ($entry =~ /^(\d+)$config->{suffix_pattern}$/) {
+				$num = $1;
+			}
+		} else {
+			if ($entry =~ /^(\d+)$/) {
+				$num = $1;
+			}
+		}
+
+		if (defined $num) {
+			my %dt_params = ();
+
+			for (my $d = 0; $d < $depth; $d++) {
+				$dt_params{NAMELIST->[$d]} = $values->[$d];
+			}
+
+			$dt_params{NAMELIST->[$depth]} = $num;
+
+			if ($config->{timezone} !~ /^local(time(zone)?)?$/i) {
+				$dt_params{time_zone} = $config->{timezone} 
+			}
+
+			my $dt = DateTime->new(%dt_params);
+
+			if ($depth == $config->{depth}) {
+				$dt = $dt +
+					DateTime::Duration->new(NAMELIST->[$depth].'s' => 1) -
+					DateTime::Duration->new(seconds => 1);
+			}
+
+			if ($dt->epoch <= $config->{retention}) {
+				push @deletables, [$entry, $num];
+			}
+		}
+	}
+
+	closedir DIR;
+
+	my $any_changes = 0;
+
+	for my $tuple (@deletables) {
+		my ($entry, $num) = @$tuple;
+
+		if ($depth == $config->{depth}) {
+			if (clean_target($opt, "$parent_dir/$entry")) {
+				$any_changes = 1;
+			}
+		} else {
+			if (clean_recursive($opt, "$parent_dir/$entry",
+					$config, $depth + 1, [@$values, $num])) {
+				$any_changes = 1;
+			}
+		}
+	}
+
+	if ($depth > YEAR) {
+		if (rmdir $parent_dir) {
+			$any_changes = 1;
+		}
+	}
+
+	return $any_changes;
+}
+
+sub main {
+	my ($opt, @base_dirs) = parse_args();
+
+	my @targets = ();
+
+	for my $dir (@base_dirs) {
+		my $yaml = get_config($dir);
+
+		my $timezone = $yaml->{timezone} || $opt->{timezone} || 'GMT';
+		my $retention = parse_retention($dir, $yaml->{retention} || $opt->{retention}, $timezone);
+		my $depth = parse_depth($dir, $yaml->{depth} || $opt->{depth});
+		my $suffix = $yaml->{suffix} || $opt->{suffix} || '';
+		my $suffix_pattern = quotemeta($suffix);
+
+		my $config = {
+			timezone       => $timezone,
+			retention      => $retention,
+			depth          => $depth,
+			suffix         => $suffix,
+			suffix_pattern => $suffix_pattern,
+		};
+
+		push @targets, [$dir, $config];
+	}
+
+	for my $target (@targets) {
+		my ($dir, $config) = @$target;
+		clean_recursive($opt, $dir, $config);
+	}
+}
+
+main();
