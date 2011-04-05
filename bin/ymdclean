@@ -163,28 +163,15 @@ sub parse_depth {
 		return MONTH;
 	} elsif ($depth =~ /^(d|da|day)s?$/i) {
 		return DAY;
-	} elsif ($depth =~ /^(h|ho|hr|hour)s?/i) {
+	} elsif ($depth =~ /^(h|ho|hr|hour)s?$/i) {
 		return HOUR;
-	} elsif ($depth =~ /^(m|mi|min|minute)s?/i) {
+	} elsif ($depth =~ /^(m|mi|min|minute)s?$/i) {
 		return MINUTE;
-	} elsif ($depth =~ /^(s|se|sec|second)s?/i) {
+	} elsif ($depth =~ /^(s|se|sec|second)s?$/i) {
 		return SECOND;
 	} else {
 		die "$dir: invalid depth: $depth";
 	}
-}
-
-sub each_entry {
-	my ($dir, $callback) = @_;
-
-	opendir DIR, $dir or die "$dir: $!";
-
-	while (my $entry = readdir DIR) {
-		next if $entry =~ m{^\.\.?$};
-		&$callback($entry);
-	}
-
-	closedir DIR;
 }
 
 sub clean_target {
@@ -305,6 +292,7 @@ sub main {
 			suffix_pattern => $suffix_pattern,
 		};
 
+		# Make sure to validate all configs before starting deletion
 		push @targets, [$dir, $config];
 	}
 
