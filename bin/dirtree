@@ -11,7 +11,7 @@ sub parse_args {
 	@ARGV = map {/^--?d?(\d+)$/ ? ('-depth' => int($1)) : $_} @ARGV;
 
 	GetOptions $opt, qw(
-		all files depth=i maxentries=i nofollowlinks
+		all files depth=i maxentries=i nofollowlinks xclude=s
 		color setcolors=s readlink expand
 		indent=s prefix=s
 		help
@@ -45,6 +45,9 @@ Search Options:
 
   -n, -nofollowlinks
     Do not follow symbolic links pointing to a directory.
+
+  -x {PATTERN}, -xclude {PATTERN}
+    Exclude directories/files that match with PATTERN.
 
 Output Options:
   -c, -color
@@ -83,9 +86,13 @@ END
 	defined $opt->{setcolors} and $opt->{color} = 1;
 	configure_lscolors($opt) if $opt->{color};
 
+	# Exclude
+	defined $opt->{xclude} and $opt->{exclude_pattern} = make_regex($opt->{xclude});
+
 	return wantarray ? ($opt, @ARGV) : $opt;
 }
 
+# TODO: also handle brackes e.g. "name.{png,jpg}"
 sub make_regex {
 	($_) = @_;
 	$_ = quotemeta $_;
@@ -133,6 +140,17 @@ sub configure_lscolors {
 	$opt->{ls_patterns} = \@ls_patterns;
 }
 
+sub should_exclude {
+	my ($opt, $name) = @_;
+
+	if (defined $opt->{xclude}) {
+		my $ret = $name =~ /^$opt->{exclude_pattern}$/o;
+		return $ret;
+	} else {
+		return 0;
+	}
+}
+
 sub should_display {
 	my ($opt, $name) = @_;
 	return ($opt->{all} || $name !~ /^\./) && ($opt->{files} || -d $name);
@@ -147,7 +165,7 @@ sub get_children {
 		while (defined(my $child = readdir DIR)) {
 			next if $child =~ /^\.\.?$/;
 
-			if (should_display($opt, $child)) {
+			if (should_display($opt, $child) and !should_exclude($opt, $child)) {
 				push @children, $child;
 			}
 
@@ -208,6 +226,8 @@ sub format_name {
 
 sub display_path {
 	my ($opt, $path, $depth, $linked, $with_prefix) = @_;
+	$path =~ s{/+$}{};
+
 	my $orig_cwd = getcwd;
 
 	print $opt->{indent} x $depth, $opt->{prefix} if $with_prefix;
@@ -218,7 +238,6 @@ sub display_path {
 		print '/';
 	}
 
-	$path =~ s{/+$}{};
 	my @chunks = split m{/+}, $path;
 	my $last = pop @chunks;
 
