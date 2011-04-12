@@ -1,0 +1,166 @@
+#!/usr/bin/perl -w
+use strict;
+use FindBin;
+
+BEGIN {
+	my $local = "$FindBin::RealBin/$FindBin::RealScript.local";
+	require $local if -f $local;
+}
+
+use Cwd qw(abs_path);
+use File::Basename;
+use File::Copy;
+use File::Path;
+use File::Rsync;
+use Getopt::Long;
+
+sub parse_args {
+	my $opt = {};
+	GetOptions $opt, qw(move suffix=s help) or die $!;
+
+	if (@ARGV < 1 or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] SYMLINKS..
+
+Resolve symbolic links and replace them by the copies of destination
+directories/files.
+
+Options:
+  -move
+    Move the destination directories/files to the symlink locations so that
+    they will be removed from the original location.
+
+  -suffix SUFFIX
+    Rename the symlinks with the suffix as backups.
+
+  -help
+    Display help.
+END
+
+		exit 1;
+	}
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub validate_symlink {
+	my ($opt, $symlink, $orig_link, $dst_path) = @_;
+
+	if (!defined $orig_link) {
+		print STDERR "error: $symlink: cannot readlink\n";
+		return 0;
+	}
+
+	if (!defined $dst_path) {
+		print STDERR "error: $symlink: cannot resolve symlink\n";
+		return 0;
+	}
+
+	if ($opt->{move}) {
+		my $one_level = $orig_link;
+
+		if ($one_level !~ m{^/}) {
+			$one_level = dirname($symlink).'/'.$one_level;
+		}
+
+		if (-l $one_level) {
+			print STDERR "error: $symlink: -move option cannot be specified ".
+					"for a symlink pointing to another symlink\n";
+
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+sub move_path {
+	my ($src, $dst) = @_;
+	return move($src, $dst) || system('mv', $src, $dst) == 0;
+}
+
+sub copy_path {
+	my ($src, $dst) = @_;
+	my $rsync = File::Rsync->new({archive => 1});
+	return $rsync->exec({src => (-d $src ? "$src/" : $src), dest => $dst});
+}
+
+sub remove_symlink {
+	my ($opt, $symlink) = @_;
+
+	if (defined $opt->{suffix}) {
+		if (-e $symlink.$opt->{suffix}) {
+			print STDERR "error: $symlink: the file with $opt->{suffix} already exists\n";
+			return 0;
+		}
+
+		unless (move_path($symlink, $symlink.$opt->{suffix})) {
+			print STDERR "error: $symlink: cannot be renamed with suffix $opt->{suffix}\n";
+			return 0;
+		}
+	} else {
+		unless (unlink $symlink) {
+			print STDERR "error: $symlink: cannot be removed\n";
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+sub copy_or_move_symlink {
+	my ($opt, $dst_path, $symlink) = @_;
+
+	if ($opt->{move}) {
+		unless (move_path($dst_path, $symlink)) {
+			print STDERR "error: $symlink: cannot be moved from $dst_path\n";
+			return 0;
+		}
+	} else {
+		unless (copy_path($dst_path, $symlink)) {
+			print STDERR "error: $symlink: cannot be copied from $dst_path\n";
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+sub revert_symlink {
+	my ($opt, $orig_link, $symlink) = @_;
+
+	if (defined $opt->{suffix}) {
+		unless (move_path($symlink.$opt->{suffix}, $symlink)) {
+			print STDERR "error: $symlink: cannot be reverted from backup renamed with $opt->{suffix}\n";
+			return 0;
+		}
+	} else {
+		unless (symlink($orig_link, $symlink)) {
+			print STDERR "error: $symlink: cannot be re-created after being removed (destination: $orig_link)\n";
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+sub main {
+	my ($opt, @symlinks) = parse_args();
+
+	for my $symlink (@symlinks) {
+		if (!-e $symlink or !-l $symlink) {
+			print STDERR "warning: $symlink: not a valid symlink\n";
+			next;
+		}
+
+		my $orig_link = readlink($symlink);
+		my $dst_path = abs_path($symlink);
+		validate_symlink($opt, $symlink, $orig_link, $dst_path) or next;
+		remove_symlink($opt, $symlink) or next;
+		copy_or_move_symlink($opt, $dst_path, $symlink) or revert_symlink($opt, $orig_link, $symlink);
+	}
+}
+
+main();
