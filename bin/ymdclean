@@ -261,7 +261,7 @@ sub clean_recursive {
 		}
 	}
 
-	if ($depth > YEAR) {
+	if (!$opt->{list} and $depth > YEAR) {
 		if (rmdir $parent_dir) {
 			$any_changes = 1;
 		}
