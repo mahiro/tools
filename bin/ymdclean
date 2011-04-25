@@ -228,16 +228,24 @@ sub clean_recursive {
 				$dt_params{time_zone} = $config->{timezone} 
 			}
 
-			my $dt = DateTime->new(%dt_params);
+			eval {
+				my $dt = DateTime->new(%dt_params);
 
-			if ($depth == $config->{depth}) {
-				$dt = $dt +
-					DateTime::Duration->new(NAMELIST->[$depth].'s' => 1) -
-					DateTime::Duration->new(seconds => 1);
-			}
+				if ($depth == $config->{depth}) {
+					$dt = $dt +
+						DateTime::Duration->new(NAMELIST->[$depth].'s' => 1) -
+						DateTime::Duration->new(seconds => 1);
+				}
 
-			if ($dt->epoch <= $config->{retention}) {
-				push @deletables, [$entry, $num];
+				if ($dt->epoch <= $config->{retention}) {
+					push @deletables, [$entry, $num];
+				}
+			};
+
+			if ($@) {
+				if ($opt->{verbose}) {
+					print "warning: unrecognizable path: $parent_dir/$entry\n";
+				}
 			}
 		}
 	}
