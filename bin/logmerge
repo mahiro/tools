@@ -1,0 +1,184 @@
+#!/usr/bin/perl -w
+use strict;
+
+use FindBin;
+
+BEGIN {
+	my $local = "$FindBin::RealBin/$FindBin::RealScript.local";
+	require $local if -f $local;
+}
+
+use Date::Parse;
+use File::Basename;
+use File::Path;
+use Getopt::Long;
+
+sub parse_args {
+	my $opt = {};
+	GetOptions $opt, qw(time=s quiet help) or die $!;
+
+	if (@ARGV < 1 or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] LOGFILES..
+
+Merge and sort log files based on timestamps (without maintaining the entire
+file contents in memory), assuming each log file is in the order of timestamps.
+
+A timestamp is extracted from the first occurrence of a square bracket "[]" in
+each line.
+
+Options:
+  -t, -time REGEX
+    Use REGEX to extract a timestamp from each line. If \$1 is captured, it is
+    used as the time string. Otherwise, \$& is used.
+
+  -q, -quiet
+    Exclude any lines in which a timestamp is not found.
+
+  -h, -help
+    Display help.
+END
+
+		exit 1;
+	}
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub open_file {
+	my ($opt, $path) = @_;
+	my $fd;
+	open $fd, $path or die "$path: $!";
+	return {fd => $fd, path => $path, open => 1, current => undef, time => 0};
+}
+
+sub close_file {
+	my ($opt, $file) = @_;
+
+	if ($file->{open}) {
+		if ($file->{fd}) {
+			eval {close $file->{fd}};
+			$file->{fd} = undef;
+		}
+
+		$file->{current} = undef;
+		$file->{open} = 0;
+	}
+}
+
+sub get_time {
+	my ($opt, $line) = @_;
+
+	if (defined $opt->{time}) {
+		if ($line =~ /$opt->{time}/o) {
+			if (defined $1 && $1 ne '') {
+				return str2time($1);
+			} else {
+				return str2time($&);
+			}
+		}
+	} elsif ($line =~ /\[(.*?)\]/) {
+		return str2time($1);
+	}
+}
+
+sub advance_file {
+	my ($opt, $file, $printing) = @_;
+
+	return if !$file->{open};
+
+	print $file->{current} if $file->{current} && $printing;
+
+	my $fd = $file->{fd};
+
+	while (1) {
+		my $line = <$fd>;
+
+		if (!defined $line) {
+			close_file($opt, $file);
+			last;
+		}
+
+		my $time = get_time($opt, $line);
+
+		if (defined $time) {
+			$file->{current} = $line;
+			$file->{time} = $time;
+			last;
+		} elsif ($printing && !$opt->{quiet}) {
+			print $line;
+		}
+	}
+}
+
+sub process_files {
+	my ($opt, @files) = @_;
+
+	# Read lines for all the files until the first timestamp is found.
+	for my $file (@files) {
+		advance_file($opt, $file, 0);
+	}
+
+	# Sort the files based on the found timestamp.
+	@files = sort {$a->{time} <=> $b->{time}} grep {$_->{open}} @files;
+
+	while (@files) {
+		# Print the current line (and any dangling lines) for $files[0],
+		# reading lines until next timestamp is found.
+		advance_file($opt, $files[0], 1);
+
+		if ($files[0]{open}) {
+			# Bubble up the $files[0] to the appropriate position of $files[$i].
+			for (my $i = 1; $i < @files; $i++) {
+				if ($files[$i - 1]{time} > $files[$i]{time}) {
+					my $tmp = $files[$i - 1];
+					$files[$i - 1] = $files[$i];
+					$files[$i] = $tmp;
+				} else {
+					last;
+				}
+			}
+		} else {
+			# $files[0] is done.
+			shift @files;
+		}
+	}
+}
+
+sub main {
+	my ($opt, @logfiles) = parse_args();
+
+	my @files = ();
+
+	eval {
+		for my $path (@logfiles) {
+			push @files, open_file($opt, $path);
+		}
+	};
+
+	if ($@) {
+		my $err = $@;
+
+		for my $file (@files) {
+			close_file($opt, $file);
+		}
+
+		die $err;
+	} else {
+		eval {
+			process_files($opt, @files);
+		};
+
+		my $err = $@;
+
+		for my $file (@files) {
+			close_file($opt, $file);
+		}
+
+		die $err if $err;
+	}
+}
+
+main();
