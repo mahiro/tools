@@ -24,6 +24,8 @@ Usage: $cmd [-from FROM_TIME] [-to TO_TIME] FROM_NUM TO_NUM [TARGET_NUM]
 
 Calculate ETA based on two points of time and amount of data to process.
 Remaining time (from the current time) will also be displayed.
+If any of the arguments are file names, the number of lines will be counted
+and used as the numbers of data.
 
 * Either -from or -to must be specified.
 
@@ -77,10 +79,25 @@ END
 		exit 1;
 	}
 
-	my ($n1, $n2, $n3);
+	my ($n1, $n2, $n3) = reinterpret_args();
+	return ($opt, $n1, $n2, $n3);
+}
 
-	if (@ARGV == 2) {
-		($n1, $n2) = @ARGV;
+sub count_lines {
+	my ($file) = @_;
+	my $n = 0;
+	open IN, $file or die "$file: $!";
+	$n++ while <IN>;
+	close IN;
+	return $n;
+}
+
+sub reinterpret_args {
+	my ($n1, $n2, $n3);
+	my @args = map {-f $_ ? count_lines($_) : ($_ + 0)} @ARGV;
+
+	if (@args == 2) {
+		($n1, $n2) = @args;
 		
 		if ($n1 < $n2) {
 			($n1, $n2, $n3) = (0, $n1, $n2);
@@ -88,10 +105,10 @@ END
 			$n3 = 0;
 		}
 	} else {
-		($n1, $n2, $n3) = @ARGV;
+		($n1, $n2, $n3) = @args;
 	}
 
-	return ($opt, $n1, $n2, $n3);
+	return  ($n1, $n2, $n3);
 }
 
 sub format_period {
