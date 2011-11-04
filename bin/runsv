@@ -1,0 +1,400 @@
+#!/usr/bin/perl -w
+use strict;
+use FindBin;
+
+BEGIN {
+	my $local = "$FindBin::RealBin/$FindBin::RealScript.local";
+	require $local if -f $local;
+}
+
+use File::Basename;
+use File::Path;
+use Getopt::Long;
+use IO::Handle;
+use Proc::Daemon;
+use Proc::ProcessTable;
+use YAML::XS;
+
+use constant INCONSISTENT => -2;
+use constant NOT_RUNNING => -1;
+use constant STOPPED => 0;
+use constant RUNNING => 1;
+use constant STARTED => 2;
+use constant RESTARTED => 3;
+
+use constant DEFAULT_YAML_FILE => 'runsv.yml';
+use constant DEFAULT_PID_FILE  => 'proc.pid' ;
+
+sub parse_args {
+	my $opt = {};
+
+	GetOptions $opt, qw(
+		stay restart kill check generate
+		dir=s workdir=s
+		pidfile=s outfile=s errfile=s infile=s
+		quiet help
+	) or die $!;
+
+	if (@ARGV < 0 or $opt->{help}) {
+		usage();
+	}
+
+	configure_action($opt, @ARGV);
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub usage {
+	my $cmd = basename($0);
+	my $yaml = DEFAULT_YAML_FILE;
+	my $pidfile = DEFAULT_PID_FILE;
+
+	print <<END;
+Usage: $cmd [OPTIONS] [CONFIGS] [ACTION | COMMAND [ARGS..]]
+
+Execute and manage an indefinitely running command.
+
+Actions:
+  -s, -stay
+    Start only when the process is not running.
+  -r, -restart
+    Kill and then start the process.
+  -k, -kill
+    Kill the process.
+  -c, -check
+    Check the status of the process.
+  -g, -generate
+    Generate or update config, but do not execute COMMAND.
+
+  If COMMAND is given, the command will be executed as a daemon and configs
+  will be stored in '$yaml' file. Otherwise, ACTION is performed based
+  on the existing config.
+
+  -restart can be used together with COMMAND to update the existing config.
+
+Configs:
+  -p, -pidfile FILE_NAME
+    Store PID. (Default = '$pidfile')
+  -w, -workdir WORK_DIR
+    Set working dir for the process. (Default = config dir)
+  -i, -infile  FILE_NAME
+    Redirect STDIN. (Default = '/dev/null')
+  -o, -outfile FILE_NAME
+    Redirect STDOUT. (Default = '/dev/null')
+  -e, -errfile FILE_NAME
+    Redirect STDERR. (Default = '/dev/null')
+
+  Configs can be specified either on start-up or with -restart.
+  Note: if -dir option is used, any paths of config values will be relative to
+  the -dir directory.
+
+Other Options:
+  -d, -dir  BASE_DIR_OR_YAML_FILE
+    Change BASE_DIR_OR_YAML_FILE. (Default dir = PWD, config = '$yaml')
+  -q, -quiet
+    Suppress output.
+  -h, -help
+    Display help.
+END
+
+	exit 1;
+}
+
+sub configure_action {
+	my ($opt, @command) = @_;
+	my @actions = ();
+
+	for my $action (qw(check kill restart stay generate)) {
+		if ($opt->{$action}) {
+			push @actions, $action;
+		}
+	}
+
+	if (@actions == 0) {
+		if (@command > 0) {
+			$opt->{'start'} = 1;
+			push @actions, 'start';
+		} else {
+			usage();
+		}
+	}
+
+	if (@actions == 1) {
+		if ($opt->{kill} || $opt->{stay} || $opt->{check}) {
+			if (@command > 0) {
+				warn "Error: COMMAND cannot be specified for -@actions\n";
+				exit 1;
+			} else {
+				for my $key (qw(outfile errfile infile pidfile)) {
+					if (defined $opt->{$key}) {
+						warn "Error: config -$key cannot be changed with -@actions\n";
+						exit 1;
+					}
+				}
+			}
+		}
+	} else {
+		warn "Error: multiple actions cannot be given: @actions\n";
+		exit 1;
+	}
+}
+
+sub read_yaml {
+	my ($yaml_file) = @_;
+	my $text;
+
+	open IN, $yaml_file or die "$yaml_file: $!";
+	{local $/; $text = <IN>}
+	close IN;
+
+	return Load($text);
+}
+
+sub write_yaml {
+	my ($yaml_file, $config) = @_;
+	my $text = Dump($config);
+
+	open OUT, '>', $yaml_file or die "$yaml_file: $!";
+	print OUT $text;
+	close OUT;
+}
+
+sub load_config {
+	my ($opt) = @_;
+	my $config;
+
+	$config = read_yaml $opt->{yaml} if -f $opt->{yaml};
+
+	if ($config) {
+		validate_config($config);
+	}
+
+	return wantarray ? ($config, $opt->{yaml}) : $config;
+}
+
+sub store_config {
+	my ($opt, $config) = @_;
+	write_yaml($opt->{yaml}, $config);
+}
+
+sub validate_config {
+	my ($config) = @_;
+
+	for my $key (qw(dir command pidfile)) {
+		unless (defined $key) {
+			warn "Error: $key is missing in config";
+			exit 1;
+		}
+	}
+
+}
+
+sub get_process_status {
+	my ($config) = @_;
+
+	my $code = NOT_RUNNING;
+	my $pid = 0;
+	my $command = "@{$config->{command}}";
+
+	if (open IN, $config->{pidfile}) {
+		$pid = int(<IN>);
+		close IN;
+		my $mtime = (stat $config->{pidfile})[9];
+
+		my $pt = Proc::ProcessTable->new(cache_ttys => 1);
+
+		for my $p (@{$pt->table}) {
+			if ($pid == $p->pid) {
+				$command = $p->cmndline;
+
+				if (abs($p->start - $mtime) < 5) {
+					$code = RUNNING;
+				} else {
+					$code = INCONSISTENT;
+				}
+
+				last;
+			}
+		}
+	}
+
+	return {code => $code, pid => $pid, command => $command};
+}
+
+sub show_status {
+	my ($opt, $status) = @_;
+	my $msg;
+
+	if ($status->{code} == NOT_RUNNING) {
+		$msg = 'NOT RUNNING';
+	} elsif ($status->{code} == RUNNING) {
+		$msg = 'RUNNING';
+	} elsif ($status->{code} == INCONSISTENT) {
+		$msg = 'Error: unknown process is running';
+	} elsif ($status->{code} == STOPPED) {
+		$msg = 'STOPPED';
+	} elsif ($status->{code} == STARTED) {
+		$msg = 'STARTED';
+	} elsif ($status->{code} == RESTARTED) {
+		$msg = 'RESTARTED';
+	}
+
+	if ($status->{code} == INCONSISTENT) {
+		warn $msg, ($status->{pid} ? " (PID: $status->{pid})" : ''), "\n";
+		warn "CMD: $status->{command}\n";
+	} elsif (!$opt->{quiet}) {
+		print $msg, ($status->{pid} ? " (PID: $status->{pid})" : ''), "\n";
+		print "CMD: $status->{command}\n";
+	}
+}
+
+sub main {
+	my ($opt, @command) = parse_args();
+
+	if (defined $opt->{dir}) {
+		if (-d $opt->{dir}) {
+			chdir $opt->{dir};
+			$opt->{yaml} = DEFAULT_YAML_FILE;
+		} else {
+			my $dir = dirname($opt->{dir});
+			mkpath $dir;
+			chdir $dir;
+			$opt->{yaml} = basename($opt->{dir});
+			$opt->{dir} = $dir;
+		}
+	} else {
+		$opt->{dir} = '.';
+		$opt->{yaml} = DEFAULT_YAML_FILE;
+	}
+
+	my ($config, $yaml);
+
+	# Phase 1: Check config / Stop process
+	if ($opt->{stay}) {
+		($config, $yaml) = load_config($opt);
+
+		if ($config) {
+			my $status = get_process_status($config);
+
+			if ($status->{code} == RUNNING) {
+				show_status($opt, $status);
+				exit 0;
+			} elsif ($status->{code} == INCONSISTENT) {
+				show_status($opt, $status);
+				exit 1;
+			}
+		}
+	} elsif ($opt->{start} || $opt->{generate}) {
+		($config, $yaml) = load_config($opt);
+
+		if ($config) {
+			if ($opt->{generate}) {
+				print "Config file '$yaml' already exists. Modify config? [y/N] ";
+				STDOUT->flush;
+				exit 1 if <STDIN> !~ /^y/i;
+			} else {
+				warn "Error: config file '$yaml' already exists\n";
+				exit 1;
+			}
+		}
+	} elsif ($opt->{kill} || $opt->{restart} || $opt->{check}) {
+		($config, $yaml) = load_config($opt);
+
+		if (!$config) {
+			warn "Error: config file not found\n";
+			exit 1;
+		}
+
+		if ($config) {
+			my $status = get_process_status($config);
+
+			if ($status->{code} == RUNNING) {
+				if ($opt->{check}) {
+					show_status($opt, $status);
+					exit 0;
+				} else {
+					kill 9, $status->{pid};
+					unlink $config->{pidfile};
+					$status->{code} = STOPPED;
+
+					if ($opt->{kill}) {
+						show_status($opt, $status);
+					}
+				}
+			} elsif ($status->{code} == INCONSISTENT) {
+				show_status($opt, $status);
+				exit 1;
+			} elsif ($status->{code} == NOT_RUNNING) {
+				if ($opt->{check}) {
+					show_status($opt, $status);
+					exit 0;
+				} elsif ($opt->{kill}) {
+					show_status($opt, $status);
+					exit 1;
+				}
+			}
+		}
+	}
+
+	# Phase 2: Modify config / Start process
+	if ($opt->{start} || $opt->{restart} || $opt->{stay} || $opt->{generate}) {
+		my $updated = 0;
+
+		$config ||= load_config($opt) or do {
+			$config = {};
+			$updated = 1;
+		};
+
+		if (@command) {
+			$config->{command} = \@command;
+			$updated = 1;
+		}
+
+		for my $key (qw(workdir pidfile outfile infile errfile)) {
+			if (defined $opt->{$key}) {
+				$config->{$key} = $opt->{$key};
+				$updated = 1;
+			}
+		}
+
+		unless (defined $config->{command}) {
+			warn "Error: COMMAND must be specified\n";
+			exit 1;
+		}
+
+		unless (defined $config->{pidfile}) {
+			$config->{pidfile} = DEFAULT_PID_FILE;
+		}
+
+		unless (defined $config->{workdir}) {
+			$config->{workdir} = '.';
+		}
+
+		validate_config($config);
+		store_config($opt, $config) if $updated;
+
+		if ($opt->{generate}) {
+			exit 0;
+		}
+
+		my $pid = Proc::Daemon->new(
+			work_dir => $config->{workdir},
+			pid_file => $config->{pidfile},
+			(defined $config->{outfile} ?
+				(child_STDOUT => $config->{outfile}) : ()),
+			(defined $config->{infile} ?
+				(child_STDIN => $config->{infile}) : ()),
+			(defined $config->{errfile} ?
+				(child_STDERR => $config->{errfile}) : ()),
+		)->Init;
+
+		if ($pid) {
+			my $code = $opt->{restart} ? RESTARTED : STARTED;
+			show_status($opt, {code => $code, pid => $pid, command => "@{$config->{command}}"});
+		} else {
+			exec @{$config->{command}};
+			exit;
+		}
+	}
+}
+
+main();
