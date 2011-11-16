@@ -16,14 +16,16 @@ use Proc::ProcessTable;
 use YAML::XS;
 
 use constant INCONSISTENT => -2;
-use constant NOT_RUNNING => -1;
-use constant STOPPED => 0;
-use constant RUNNING => 1;
-use constant STARTED => 2;
-use constant RESTARTED => 3;
+use constant NOT_RUNNING  => -1;
+use constant STOPPED      =>  0;
+use constant RUNNING      =>  1;
+use constant STARTED      =>  2;
+use constant RESTARTED    =>  3;
 
-use constant DEFAULT_YAML_FILE => 'runsv.yml';
-use constant DEFAULT_PID_FILE  => 'proc.pid' ;
+use constant DEFAULT_YAML_FILE    => 'runsv.yml';
+use constant DEFAULT_PID_FILE     => 'proc.pid' ;
+use constant DEFAULT_WORK_DIR     => '.';
+use constant DEFAULT_ALLOW_SECOND => 5;
 
 sub parse_args {
 	my $opt = {};
@@ -32,11 +34,12 @@ sub parse_args {
 		stay restart kill check generate
 		dir=s workdir=s
 		pidfile=s outfile=s errfile=s infile=s
+		match=s allow=i
 		quiet help
 	) or die $!;
 
 	if (@ARGV < 0 or $opt->{help}) {
-		usage();
+		usage($opt);
 	}
 
 	configure_action($opt, @ARGV);
@@ -44,12 +47,23 @@ sub parse_args {
 }
 
 sub usage {
+	my ($opt) = @_;
+
 	my $cmd = basename($0);
 	my $yaml = DEFAULT_YAML_FILE;
 	my $pidfile = DEFAULT_PID_FILE;
+	my $allow = DEFAULT_ALLOW_SECOND;
 
 	print <<END;
 Usage: $cmd [CONFIGS..|OPTIONS..] [ACTION | [--] COMMAND [ARGS..]]
+END
+
+	if (!$opt->{help}) {
+		print <<END;
+Try -help for details.
+END
+	} else {
+		print <<END;
 
 Execute and manage an indefinitely running command.
 
@@ -63,13 +77,15 @@ Actions:
   -c, -check
     Check the status of the process.
   -g, -generate
-    Generate or update config, but do not execute COMMAND.
+    Generate or update config, but do not start or stop the process.
 
   If COMMAND is given, the command will be executed as a daemon and configs
   will be stored in '$yaml' file. Otherwise, ACTION is performed based
   on the existing config.
 
-  -restart can be used together with COMMAND to update the existing config.
+  COMMAND can also be specified together with -stay, -restart, or -generate
+  to update the existing config (see below section for details about when the
+  config file is overwritten).
 
 Configs:
   -p, -pidfile FILE_NAME
@@ -82,8 +98,25 @@ Configs:
     Redirect STDOUT. (Default = '/dev/null')
   -e, -errfile FILE_NAME
     Redirect STDERR. (Default = '/dev/null')
+  -m, -match CMD_REGEX
+    Use regex as an extra measure when determining if the process is running.
+    Without this option, the determination is based on PID and start time,
+    with respect to the PID file's content and modification time.
+    If CMD_REGEX is an empty string ('') or a single dot ('.'), the command
+    line itself will be used as the pattern.
+  -a, -allow SECOND
+    When comparing the command start time and the modification time of the PID
+    file, allow the specified second difference. (Default = $allow seconds)
 
-  Configs can be specified either on start-up or with -restart.
+  Configs can be specified either on start-up or with any actions. On start-up,
+  a new config file will be generated with the values.
+  If the action is -stay, -restart, or -generate, the current status is checked
+  with the existing config, and new configs will overwrite the existing file.
+  (For -stay, the file will not be overwritten when the process has already
+  been running.)
+  In the case with -kill or -check, the supplied values are used to stop or
+  check the current process.
+
   Note: if -dir option is used, any paths of config values will be relative to
   the -dir directory.
 
@@ -95,6 +128,7 @@ Other Options:
   -h, -help
     Display help.
 END
+	}
 
 	exit 1;
 }
@@ -158,6 +192,21 @@ sub write_yaml {
 	close OUT;
 }
 
+sub inherit_opt_config {
+	my ($opt, $config) = @_;
+	my $updated = 0;
+
+	for my $key (qw(workdir pidfile outfile infile errfile match allow)) {
+		if (defined $opt->{$key} and
+				(!defined $config->{$key} or $opt->{$key} ne $config->{$key})) {
+			$config->{$key} = $opt->{$key};
+			$updated = 1;
+		}
+	}
+
+	return $updated;
+}
+
 sub load_config {
 	my ($opt) = @_;
 	my $config;
@@ -173,7 +222,10 @@ sub load_config {
 
 sub store_config {
 	my ($opt, $config) = @_;
-	write_yaml($opt->{yaml}, $config);
+
+	unless ($opt->{temporary}) {
+		write_yaml($opt->{yaml}, $config);
+	}
 }
 
 sub validate_config {
@@ -185,7 +237,6 @@ sub validate_config {
 			exit 1;
 		}
 	}
-
 }
 
 sub get_process_status {
@@ -194,22 +245,38 @@ sub get_process_status {
 	my $code = NOT_RUNNING;
 	my $pid = 0;
 	my $command = "@{$config->{command}}";
+	my $allow = defined $config->{allow} ? $config->{allow} : DEFAULT_ALLOW_SECOND;
+
+	my $pattern;
+
+	if (defined $config->{match}) {
+		$pattern = $config->{match};
+
+		if ($pattern =~ /^\.?$/) {
+			$pattern = join(' ', map {quotemeta $_} @{$config->{command}}).'$';
+			$pattern =~ s/^\s+//;
+			$pattern =~ s/\s+/\\s+/g;
+			$pattern =~ s/\\s\+$/\\s*/;
+		}
+	}
 
 	if (open IN, $config->{pidfile}) {
 		$pid = int(<IN>);
 		close IN;
-		my $mtime = (stat $config->{pidfile})[9];
 
+		my $mtime = (stat $config->{pidfile})[9];
 		my $pt = Proc::ProcessTable->new(cache_ttys => 1);
 
 		for my $p (@{$pt->table}) {
 			if ($pid == $p->pid) {
 				$command = $p->cmndline;
 
-				if (abs($p->start - $mtime) < 5) {
-					$code = RUNNING;
-				} else {
+				if (defined $pattern and $command !~ /$pattern/) {
 					$code = INCONSISTENT;
+				} elsif ($allow >= 0 and abs($p->start - $mtime) > $allow) {
+					$code = INCONSISTENT;
+				} else {
+					$code = RUNNING;
 				}
 
 				last;
@@ -239,16 +306,18 @@ sub show_status {
 	}
 
 	my $print;
+	my $cmd_label = 'Command';
 
 	if ($status->{code} == INCONSISTENT) {
 		$print = sub {warn @_};
+		$cmd_label = 'Unknown';
 	} elsif (!$opt->{quiet}) {
 		$print = sub {print @_};
 	}
 
 	if ($print) {
 		&$print("Status: ", $msg, ($status->{pid} ? " (PID: $status->{pid})" : ''), "\n");
-		&$print("Command: $status->{command}\n");
+		&$print("$cmd_label: $status->{command}\n");
 	}
 }
 
@@ -267,17 +336,24 @@ sub main {
 			$opt->{dir} = $dir;
 		}
 	} else {
-		$opt->{dir} = '.';
+		$opt->{dir}  = DEFAULT_WORK_DIR;
 		$opt->{yaml} = DEFAULT_YAML_FILE;
 	}
 
+	my $should_update = $opt->{restart} || $opt->{generate};
+
 	my ($config, $yaml);
+	my $updated;
 
 	# Phase 1: Check config / Stop process
 	if ($opt->{stay}) {
 		($config, $yaml) = load_config($opt);
 
 		if ($config) {
+			unless ($should_update) {
+				$updated = 1 if inherit_opt_config($opt, $config);
+			}
+
 			my $status = get_process_status($config);
 
 			if ($status->{code} == RUNNING) {
@@ -292,6 +368,10 @@ sub main {
 		($config, $yaml) = load_config($opt);
 
 		if ($config) {
+			unless ($should_update) {
+				$updated = 1 if inherit_opt_config($opt, $config);
+			}
+
 			if ($opt->{start}) {
 				warn "Error: config file '$yaml' already exists\n";
 				exit 1;
@@ -310,6 +390,10 @@ sub main {
 		}
 
 		if ($config) {
+			unless ($should_update) {
+				$updated = 1 if inherit_opt_config($opt, $config);
+			}
+
 			my $status = get_process_status($config);
 
 			if ($status->{code} == RUNNING) {
@@ -342,9 +426,8 @@ sub main {
 
 	# Phase 2: Modify config / Start process
 	if ($opt->{start} || $opt->{restart} || $opt->{stay} || $opt->{generate}) {
-		my $updated = 0;
 
-		$config ||= load_config($opt) or do {
+		$config ||= load_config($opt, 1) or do {
 			$config = {};
 			$updated = 1;
 		};
@@ -354,11 +437,8 @@ sub main {
 			$updated = 1;
 		}
 
-		for my $key (qw(workdir pidfile outfile infile errfile)) {
-			if (defined $opt->{$key}) {
-				$config->{$key} = $opt->{$key};
-				$updated = 1;
-			}
+		if (inherit_opt_config($opt, $config)) {
+			$updated = 1;
 		}
 
 		unless (defined $config->{command}) {
@@ -366,16 +446,21 @@ sub main {
 			exit 1;
 		}
 
-		unless (defined $config->{pidfile}) {
-			$config->{pidfile} = DEFAULT_PID_FILE;
-		}
+		my $defaults = {
+			pidfile => DEFAULT_PID_FILE,
+			workdir => DEFAULT_WORK_DIR,
+			allow   => DEFAULT_ALLOW_SECOND,
+		};
 
-		unless (defined $config->{workdir}) {
-			$config->{workdir} = '.';
+		for my $key (keys %$defaults) {
+			$config->{$key} = $defaults->{$key} unless defined $config->{$key};
 		}
 
 		validate_config($config);
-		store_config($opt, $config) if $updated;
+
+		if ($updated and $should_update) {
+			store_config($opt, $config);
+		}
 
 		if ($opt->{generate}) {
 			exit 0;
