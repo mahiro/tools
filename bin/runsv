@@ -49,13 +49,13 @@ sub usage {
 	my $pidfile = DEFAULT_PID_FILE;
 
 	print <<END;
-Usage: $cmd [OPTIONS] [CONFIGS] [ACTION | COMMAND [ARGS..]]
+Usage: $cmd [CONFIGS..|OPTIONS..] [ACTION | [--] COMMAND [ARGS..]]
 
 Execute and manage an indefinitely running command.
 
 Actions:
   -s, -stay
-    Start only when the process is not running.
+    Start the process only when it is not running.
   -r, -restart
     Kill and then start the process.
   -k, -kill
@@ -238,12 +238,17 @@ sub show_status {
 		$msg = 'RESTARTED';
 	}
 
+	my $print;
+
 	if ($status->{code} == INCONSISTENT) {
-		warn $msg, ($status->{pid} ? " (PID: $status->{pid})" : ''), "\n";
-		warn "CMD: $status->{command}\n";
+		$print = sub {warn @_};
 	} elsif (!$opt->{quiet}) {
-		print $msg, ($status->{pid} ? " (PID: $status->{pid})" : ''), "\n";
-		print "CMD: $status->{command}\n";
+		$print = sub {print @_};
+	}
+
+	if ($print) {
+		&$print("Status: ", $msg, ($status->{pid} ? " (PID: $status->{pid})" : ''), "\n");
+		&$print("Command: $status->{command}\n");
 	}
 }
 
@@ -287,13 +292,13 @@ sub main {
 		($config, $yaml) = load_config($opt);
 
 		if ($config) {
-			if ($opt->{generate}) {
+			if ($opt->{start}) {
+				warn "Error: config file '$yaml' already exists\n";
+				exit 1;
+			} elsif ($opt->{generate}) {
 				print "Config file '$yaml' already exists. Modify config? [y/N] ";
 				STDOUT->flush;
 				exit 1 if <STDIN> !~ /^y/i;
-			} else {
-				warn "Error: config file '$yaml' already exists\n";
-				exit 1;
 			}
 		}
 	} elsif ($opt->{kill} || $opt->{restart} || $opt->{check}) {
