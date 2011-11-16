@@ -23,6 +23,7 @@ sub parse_args {
 	GetOptions $opt, qw(
 		directory=s path=s
 		gmt mtime older=s
+		exec=s
 		force interactive verbose
 		show help
 	) or die $!;
@@ -51,6 +52,11 @@ Options:
 
   -o TIMESPAN, -older TIMESPAN
     Only archive files older than the specified time span (or a specific time).
+
+  -e COMMAND, -exec COMMAND
+    Run COMMAND after each file is moved. Any occurrences of a pair of braces
+    ('{}') will be replaced by the file, or if no {} pairs occur, the file name
+    is appended at the end as an argument.
 
   -f, -force
     Skip the confirmation step at the beginning.
@@ -178,6 +184,17 @@ sub move_file {
 
 	print "mv $file $dst_file\n" if $opt->{verbose};
 	rename $file, $dst_file;
+
+	if (defined $opt->{exec}) {
+		my $cmd = $opt->{exec};
+		my $param = $dst_file;
+		$param =~ s/'/\\'/g;
+		$cmd .= " '$param'" if $cmd !~ /\{\}/;
+		$cmd =~ s/\{\}/'$param'/g;
+
+		print "$cmd\n" if $opt->{verbose};
+		system $cmd;
+	}
 }
 
 sub show_files {
