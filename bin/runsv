@@ -15,6 +15,7 @@ use Proc::Daemon;
 use Proc::ProcessTable;
 use YAML::XS;
 
+use constant HOOK_FAILED  => -3;
 use constant INCONSISTENT => -2;
 use constant NOT_RUNNING  => -1;
 use constant STOPPED      =>  0;
@@ -67,6 +68,10 @@ END
 
 Execute and manage an indefinitely running command.
 
+If COMMAND is given, the command will be executed as a daemon and configs will
+be stored in '$yaml' file. Otherwise, ACTION is performed based on the
+existing config.
+
 Actions:
   -s, -stay
     Start the process only when it is not running.
@@ -78,10 +83,6 @@ Actions:
     Check the status of the process.
   -g, -generate
     Generate or update config, but do not start or stop the process.
-
-  If COMMAND is given, the command will be executed as a daemon and configs
-  will be stored in '$yaml' file. Otherwise, ACTION is performed based
-  on the existing config.
 
   COMMAND can also be specified together with -stay, -restart, or -generate
   to update the existing config (see below section for details about when the
@@ -127,6 +128,30 @@ Other Options:
     Suppress output.
   -h, -help
     Display help.
+
+Hooks:
+  Hooks can be added manually to the config file, so that specified programs
+  or scripts are executed on events, and the exit code can be utilized to
+  control the flow.
+
+  Below is an example config for hooks.
+
+---
+hooks:
+  before_start: ['prog1', 'arg1', 'arg2']
+  after_start: ['prog2', 'arg1', 'arg2']
+  before_stop: 'prog3 arg1 arg2 > output'
+  after_stop: 'prog4 arg1 arg2 | prog5'
+  nocheck: true
+  nocheck_before_start: false
+---
+
+  Each event handler can be given as either an array or a single string.
+  By default, if the exit code of each handler is non-zero, $cmd will be
+  terminated at that point, unless 'nocheck' value is set to true.
+  The 'nocheck' option can be specified for individual event, such as
+  'nocheck_before_start' etc.
+
 END
 	}
 
@@ -217,6 +242,18 @@ sub load_config {
 		validate_config($config);
 	}
 
+	# Normalize hooks (Each event handler must be an array ref, as the args to 
+	# 'system()' call.)
+	if (exists $config->{hooks}) {
+		for my $event (%{$config->{hooks}}) {
+			if ($event !~ /^nocheck/) {
+				unless (ref $config->{hooks}{$event}) {
+					$config->{hooks}{$event} = [$config->{hooks}{$event}];
+				}
+			}
+		}
+	}
+
 	return wantarray ? ($config, $opt->{yaml}) : $config;
 }
 
@@ -244,7 +281,7 @@ sub get_process_status {
 
 	my $code = NOT_RUNNING;
 	my $pid = 0;
-	my $command = "@{$config->{command}}";
+	my $command;
 	my $allow = defined $config->{allow} ? $config->{allow} : DEFAULT_ALLOW_SECOND;
 
 	my $pattern;
@@ -288,36 +325,79 @@ sub get_process_status {
 }
 
 sub show_status {
-	my ($opt, $status) = @_;
-	my $msg;
+	my ($opt, $config, $status) = @_;
+	my $code = $status->{code};
+	my $status_str;
 
-	if ($status->{code} == NOT_RUNNING) {
-		$msg = 'NOT RUNNING';
-	} elsif ($status->{code} == RUNNING) {
-		$msg = 'RUNNING';
-	} elsif ($status->{code} == INCONSISTENT) {
-		$msg = 'Error: unknown process is running';
-	} elsif ($status->{code} == STOPPED) {
-		$msg = 'STOPPED';
-	} elsif ($status->{code} == STARTED) {
-		$msg = 'STARTED';
-	} elsif ($status->{code} == RESTARTED) {
-		$msg = 'RESTARTED';
+	if ($code == NOT_RUNNING) {
+		$status_str = 'NOT RUNNING';
+	} elsif ($code == RUNNING) {
+		$status_str = 'RUNNING';
+	} elsif ($code == INCONSISTENT) {
+		$status_str = 'INCONSISTENT';
+	} elsif ($code == STOPPED) {
+		$status_str = 'STOPPED';
+	} elsif ($code == STARTED) {
+		$status_str = 'STARTED';
+	} elsif ($code == RESTARTED) {
+		$status_str = 'RESTARTED';
 	}
 
-	my $print;
-	my $cmd_label = 'Command';
+	unless ($opt->{quiet}) {
+		print "Status: $status_str", ($status->{pid} ? " (PID: $status->{pid})" : ''), "\n";
 
-	if ($status->{code} == INCONSISTENT) {
-		$print = sub {warn @_};
-		$cmd_label = 'Unknown';
-	} elsif (!$opt->{quiet}) {
-		$print = sub {print @_};
+		print "Command: ", (($code != INCONSISTENT && defined $status->{command}) ?
+				$status->{command} : "@{$config->{command}}"), "\n";
 	}
 
-	if ($print) {
-		&$print("Status: ", $msg, ($status->{pid} ? " (PID: $status->{pid})" : ''), "\n");
-		&$print("$cmd_label: $status->{command}\n");
+	if ($code == INCONSISTENT) {
+		warn "Error: unknown process is running\n";
+		warn "Unknown: $status->{command}\n";
+	}
+}
+
+sub wait_for_process {
+	my ($config, $completion_code) = @_;
+	my $status;
+
+	while (1) {
+		$status = get_process_status($config);
+		my $code = $status->{code};
+		last if $code == $completion_code || $code == INCONSISTENT;
+		print "CODE = $code\n";
+		sleep 1;
+	}
+
+	return $status;
+}
+
+sub handle_hook {
+	my ($opt, $config, $hook_name, $status) = @_;
+
+	if (exists $config->{hooks}{$hook_name}) {
+		my $hook = $config->{hooks}{$hook_name};
+		my $ret = system(@$hook);
+
+		my $nocheck = 0;
+
+		if (defined $config->{hooks}{"nocheck_$hook_name"}) {
+			$nocheck = $config->{hooks}{"nocheck_$hook_name"};
+		} elsif (defined $config->{hooks}{nocheck}) {
+			$nocheck = $config->{hooks}{nocheck};
+		}
+
+		if ($nocheck) {
+			return;
+		} elsif ($ret != 0) {
+			$status->{hook_failed} = 1;
+			$status->{hook_name} = $hook_name;
+			show_status($opt, $config, $status);
+
+			warn "Warning: '$hook_name' hook failed (exit code = $ret)\n";
+			warn "Hook: @$hook\n";
+
+			exit 1;
+		}
 	}
 }
 
@@ -340,10 +420,12 @@ sub main {
 		$opt->{yaml} = DEFAULT_YAML_FILE;
 	}
 
-	my $should_update = $opt->{restart} || $opt->{generate};
+	my $should_update = $opt->{start} || $opt->{stay} ||
+			$opt->{restart} || $opt->{generate};
 
 	my ($config, $yaml);
 	my $updated;
+	my $status;
 
 	# Phase 1: Check config / Stop process
 	if ($opt->{stay}) {
@@ -354,13 +436,13 @@ sub main {
 				$updated = 1 if inherit_opt_config($opt, $config);
 			}
 
-			my $status = get_process_status($config);
+			$status = get_process_status($config);
 
 			if ($status->{code} == RUNNING) {
-				show_status($opt, $status);
+				show_status($opt, $config, $status);
 				exit 0;
 			} elsif ($status->{code} == INCONSISTENT) {
-				show_status($opt, $status);
+				show_status($opt, $config, $status);
 				exit 1;
 			}
 		}
@@ -394,30 +476,43 @@ sub main {
 				$updated = 1 if inherit_opt_config($opt, $config);
 			}
 
-			my $status = get_process_status($config);
+			$status = get_process_status($config);
 
 			if ($status->{code} == RUNNING) {
 				if ($opt->{check}) {
-					show_status($opt, $status);
+					show_status($opt, $config, $status);
 					exit 0;
 				} else {
+					handle_hook($opt, $config, 'before_stop', $status);
+					my $prev_command = $status->{command};
 					kill 9, $status->{pid};
-					unlink $config->{pidfile};
-					$status->{code} = STOPPED;
 
-					if ($opt->{kill}) {
-						show_status($opt, $status);
+					$status = wait_for_process($config, NOT_RUNNING);
+					$status->{command} ||= $prev_command;
+
+					if ($status->{code} == NOT_RUNNING) {
+						$status->{code} = STOPPED;
+						unlink $config->{pidfile};
+
+						handle_hook($opt, $config, 'after_stop', $status);
+
+						if ($opt->{kill}) {
+							show_status($opt, $config, $status);
+						}
+					} elsif ($status->{code} == INCONSISTENT) {
+						show_status($opt, $config, $status);
+						exit 1;
 					}
 				}
 			} elsif ($status->{code} == INCONSISTENT) {
-				show_status($opt, $status);
+				show_status($opt, $config, $status);
 				exit 1;
 			} elsif ($status->{code} == NOT_RUNNING) {
 				if ($opt->{check}) {
-					show_status($opt, $status);
+					show_status($opt, $config, $status);
 					exit 0;
 				} elsif ($opt->{kill}) {
-					show_status($opt, $status);
+					show_status($opt, $config, $status);
 					exit 1;
 				}
 			}
@@ -426,7 +521,6 @@ sub main {
 
 	# Phase 2: Modify config / Start process
 	if ($opt->{start} || $opt->{restart} || $opt->{stay} || $opt->{generate}) {
-
 		$config ||= load_config($opt, 1) or do {
 			$config = {};
 			$updated = 1;
@@ -466,6 +560,17 @@ sub main {
 			exit 0;
 		}
 
+		my $stopped = ($status->{code} == STOPPED);
+		$status ||= get_process_status($config);
+
+		if ($status->{code} != NOT_RUNNING && $status->{code} != STOPPED) {
+			show_status($opt, $config, $status);
+			exit 1;
+		}
+
+
+		handle_hook($opt, $config, 'before_start', $status);
+
 		my $pid = Proc::Daemon->new(
 			work_dir => $config->{workdir},
 			pid_file => $config->{pidfile},
@@ -478,8 +583,16 @@ sub main {
 		)->Init;
 
 		if ($pid) {
-			my $code = $opt->{restart} ? RESTARTED : STARTED;
-			show_status($opt, {code => $code, pid => $pid, command => "@{$config->{command}}"});
+			$status = wait_for_process($config, RUNNING);
+
+			if ($status->{code} == RUNNING) {
+				$status->{code} = $stopped ? RESTARTED : STARTED;
+				handle_hook($opt, $config, 'after_start', $status);
+				show_status($opt, $config, $status);
+			} elsif ($status->{code} == INCONSISTENT) {
+				show_status($opt, $config, $status);
+				exit 1;
+			}
 		} else {
 			exec @{$config->{command}};
 			exit;
