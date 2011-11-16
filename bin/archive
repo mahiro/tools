@@ -41,8 +41,17 @@ Options:
   -d ARCHIVE_DIR, -directory ARCHIVE_DIR
     Specify archive directory. Default = ./archives
 
-  -p DATETIME, -path DATETIME
-    Specify date/time format. Default = \%Y/\%m/\%d
+  -p PATTERN, -path PATTERN
+    Specify date/time format (strftime). Default = \%Y/\%m/\%d
+    PATTERN can contain variables as below (\$varname or \${varname}):
+      \$name: the base name including the file extension
+      \$base: the base name excluding the file extension
+      \$ext: the file extension including the dot ('.') if any
+      \$extname: the file extension excluding the dot ('.') if any
+      \$timestamp: unix time stamp in seconds
+      \$long: short for '%Y/%m/%d/\$name.%Y%m%d-%H%M%S'
+    If PATTERN does not contain any variables or ends with a slash ('/'),
+    it is regarded as a directory where the file will be moved.
 
   -g, -gmt
     Use GMT intead of local time.
@@ -153,15 +162,69 @@ sub get_time {
 	return ((stat $file)[9]);
 }
 
-sub move_file {
-	my ($opt, $file, $time, $dir, $absdir, $path) = @_;
+sub apply_variables {
+	my ($text, $map) = @_;
 
-	my $dst = ($opt->{gmt} ?
+	my $conv = sub {
+		my ($orig) = @_;
+		my $name = $orig;
+		$name =~ s/^\$\{?|\}$//g;
+		return defined $map->{$name} ? $map->{$name} : $orig;
+	};
+
+	$text =~ s/(\$[A-Za-z]+|\$\{[A-Za-z]+\})/&$conv($1)/eg;
+	return $text;
+}
+
+sub expand_common_variables {
+	my ($path) = @_;
+
+	my $map = {
+		long => '%Y/%m/%d/$name.%Y%m%d-%H%M%S',
+	};
+
+	return apply_variables($path, $map);
+}
+
+sub expand_file_variables {
+	my ($opt, $file, $time, $path) = @_;
+
+	$path = ($opt->{gmt} ?
 			strftime($path, gmtime $time) :
 			strftime($path, localtime $time));
 
-	my $dst_dir = "$absdir/$dst";
-	my $dst_file = "$dst_dir/".basename($file);
+	if ($path =~ /\$/) {
+		my $name = basename($file);
+		my $base = $name;
+		my $ext = '';
+
+		if ($name =~ /^(.+)(\.[^\.]+)$/) {
+			($base, $ext) = ($1, $2);
+		}
+
+		(my $extname = $ext) =~ s/^\.//;
+
+		my $map = {
+			name => $name,
+			base => $base,
+			ext => $ext,
+			extname => $extname,
+			timestamp => $time,
+		};
+
+		$path = apply_variables($path, $map);
+		return $path =~ m{/$} ? $path.basename($file) : $path;
+	} else {
+		return "$path/".basename($file);
+	}
+}
+
+sub move_file {
+	my ($opt, $file, $time, $dir, $absdir, $path) = @_;
+	$path = expand_file_variables($opt, $file, $time, $path);
+
+	my $dst_file = "$absdir/$path";
+	my $dst_dir = dirname($dst_file);
 
 	if (-e $dst_file) {
 		if ($opt->{interactive}) {
@@ -175,7 +238,7 @@ sub move_file {
 	}
 
 	if ($opt->{interactive}) {
-		print "$dst: $file: Archive? [y/N] ";
+		print dirname($path), ": ", basename($path), ": Archive? [y/N] ";
 		STDOUT->flush;
 		return if <STDIN> !~ /^y/i;
 	}
@@ -202,12 +265,8 @@ sub show_files {
 
 	for my $file (sort {$plan->{$a} <=> $plan->{$b}} keys %$plan) {
 		my $time = $plan->{$file};
-
-		my $dst = ($opt->{gmt} ?
-				strftime($path, gmtime $time) :
-				strftime($path, localtime $time));
-
-		print "$dst: $file\n";
+		my $dst = expand_file_variables($opt, $file, $time, $path);
+		print dirname($dst), ": ", basename($dst), "\n";
 	}
 }
 
@@ -219,6 +278,8 @@ sub main {
 	my $absdir = abs_path($dir);
 
 	my $path = defined $opt->{path} ? $opt->{path} : '%Y/%m/%d';
+	$path = expand_common_variables($path);
+
 	@files = <./*> if @files == 0; # do not include '.*' unless dotglob is on
 
 	# Make plan
