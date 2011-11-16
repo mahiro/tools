@@ -22,7 +22,7 @@ sub parse_args {
 
 	GetOptions $opt, qw(
 		directory=s path=s
-		gmt mtime older=s
+		gmt mtime older=s larger=s
 		exec=s
 		force interactive verbose
 		show help
@@ -62,10 +62,14 @@ Options:
   -o TIMESPAN, -older TIMESPAN
     Only archive files older than the specified time span (or a specific time).
 
+  -l FILESIZE, -larger FILESIZE
+    Only archive files larger than the specified size.
+
   -e COMMAND, -exec COMMAND
     Run COMMAND after each file is moved. Any occurrences of a pair of braces
     ('{}') will be replaced by the file, or if no {} pairs occur, the file name
     is appended at the end as an argument.
+    (E.g. -exec 'gzip -9')
 
   -f, -force
     Skip the confirmation step at the beginning.
@@ -87,6 +91,7 @@ END
 	}
 
 	$opt->{older} = parse_timespan($opt->{older}) if defined $opt->{older};
+	$opt->{larger} = parse_filesize($opt->{larger}) if defined $opt->{larger};
 	return wantarray ? ($opt, @ARGV) : $opt;
 }
 
@@ -121,6 +126,33 @@ sub parse_timespan {
 		return $dt->subtract_duration($d)->epoch;
 	} else {
 		return str2time($input);
+	}
+}
+
+sub parse_filesize {
+	my ($input) = @_;
+
+	if ($input =~ /^\s*((?:\d*\.)?\d+)\s*(\w*)\s*$/) {
+		my ($num, $unit) = ($1, $2);
+		my $d;
+
+		if ($unit eq '' or $unit =~ /^b(ytes?)?$/i) {
+			$d = 1;
+		} elsif ($unit =~ /^kb?/i) {
+			$d = 2 ** 10;
+		} elsif ($unit =~ /^mb?/i) {
+			$d = 2 ** 20;
+		} elsif ($unit =~ /^gb?/i) {
+			$d = 2 ** 30;
+		} elsif ($unit =~ /^tb?/i) {
+			$d = 2 ** 40;
+		} else {
+			die "unknown unit: $unit";
+		}
+
+		return $num * $d;
+	} else {
+		die "cannot parse file size: $input";
 	}
 }
 
@@ -290,7 +322,9 @@ sub main {
 			my $time = get_time($opt, $file);
 
 			if (!defined $opt->{older} or $time < $opt->{older}) {
-				$plan->{$file} = $time;
+				if (!defined $opt->{larger} or -s $file > $opt->{larger}) {
+					$plan->{$file} = $time;
+				}
 			}
 		}
 	}
