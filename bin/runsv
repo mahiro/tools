@@ -240,15 +240,15 @@ sub load_config {
 
 	if ($config) {
 		validate_config($config);
-	}
 
-	# Normalize hooks (Each event handler must be an array ref, as the args to 
-	# 'system()' call.)
-	if (exists $config->{hooks}) {
-		for my $event (%{$config->{hooks}}) {
-			if ($event !~ /^nocheck/) {
-				unless (ref $config->{hooks}{$event}) {
-					$config->{hooks}{$event} = [$config->{hooks}{$event}];
+		# Normalize hooks (Each event handler must be an array ref, as the args to 
+		# 'system()' call.)
+		if (exists $config->{hooks}) {
+			for my $event (%{$config->{hooks}}) {
+				if ($event !~ /^nocheck/) {
+					unless (ref $config->{hooks}{$event}) {
+						$config->{hooks}{$event} = [$config->{hooks}{$event}];
+					}
 				}
 			}
 		}
@@ -564,7 +564,7 @@ sub main {
 			exit 0;
 		}
 
-		my $stopped = ($status->{code} == STOPPED);
+		my $stopped = ($status && $status->{code} == STOPPED);
 		$status ||= get_process_status($config);
 
 		if ($status->{code} != NOT_RUNNING && $status->{code} != STOPPED) {
