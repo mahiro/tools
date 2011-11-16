@@ -15,7 +15,7 @@ use Proc::Daemon;
 use Proc::ProcessTable;
 use YAML::XS;
 
-use constant HOOK_FAILED  => -3;
+use constant ZOMBIE       => -3;
 use constant INCONSISTENT => -2;
 use constant NOT_RUNNING  => -1;
 use constant STOPPED      =>  0;
@@ -308,7 +308,9 @@ sub get_process_status {
 			if ($pid == $p->pid) {
 				$command = $p->cmndline;
 
-				if (defined $pattern and $command !~ /$pattern/) {
+				if ($command =~ m{^/proc/$pid/cmdline}) {
+					$code = ZOMBIE;
+				} elsif (defined $pattern and $command !~ /$pattern/) {
 					$code = INCONSISTENT;
 				} elsif ($allow >= 0 and abs($p->start - $mtime) > $allow) {
 					$code = INCONSISTENT;
@@ -341,6 +343,8 @@ sub show_status {
 		$status_str = 'STARTED';
 	} elsif ($code == RESTARTED) {
 		$status_str = 'RESTARTED';
+	} elsif ($code == ZOMBIE) {
+		$status_str = 'ZOMBIE';
 	}
 
 	unless ($opt->{quiet}) {
