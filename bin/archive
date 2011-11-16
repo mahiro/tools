@@ -253,7 +253,11 @@ sub main {
 		print "(Directory will be created)\n" unless -d $dir;
 
 		if (defined $opt->{older}) {
-			print "Older than: ".strftime('%F %T', localtime($opt->{older}))."\n";
+			my $older_fmt = strftime('%F %T', $opt->{gmt} ?
+					gmtime($opt->{older}) :
+					localtime($opt->{older}));
+
+			print "Older than: $older_fmt\n";
 		}
 
 		print "\n";
