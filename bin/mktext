@@ -1,0 +1,108 @@
+#!/usr/bin/perl -w
+use strict;
+
+use File::Basename;
+use File::Path;
+use Getopt::Long;
+
+sub parse_args {
+	my $opt = {};
+	GetOptions $opt, qw(width=i help) or die $!;
+
+	if (@ARGV < 1 or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] SIZE
+
+Generate a randomized text of the SIZE bytes. SIZE can optionally have a unit
+such as KB, MB, GB, and TB. The text contains printable ASCII characters
+(0x20-0x7F).
+
+Options:
+  -break {cr|lf|crlf|no}
+    Specify the line break. (Default = crlf)
+
+  -width COLUMNS
+    Set folding width. (Default = 80)
+    Note: the width includes the length of the line break (e.g. if width = 80
+    and the line break is crlf, each line contains up to 78 characters followed
+    by the 2-byte line break.)
+
+  -help
+    Display help.
+END
+
+		exit 1;
+	}
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub parse_size {
+	my ($size) = @_;
+
+	if ($size =~ /^((?:\d*\.)?\d+)\s*kb?$/i) {
+		$size = $1 * 2 ** 10;
+	} elsif ($size =~ /^((?:\d*\.)?\d+)\s*mb?$/i) {
+		$size = $1 * 2 ** 20;
+	} elsif ($size =~ /^((?:\d*\.)?\d+)\s*gb?$/i) {
+		$size = $1 * 2 ** 30;
+	} elsif ($size =~ /^((?:\d*\.)?\d+)\s*tb?$/i) {
+		$size = $1 * 2 ** 40;
+	} elsif ($size =~ /^((?:\d*\.)?\d+)b?$/i) {
+		$size = $1;
+	} else {
+		die "cannot parse size: $size";
+	}
+
+	return int($size);
+}
+
+sub parse_break {
+	my ($opt) = @_;
+
+	if (defined $opt->{break}) {
+		my $str = $opt->{break};
+
+		if ($str =~ /^crlf$/i) {
+			return "\r\n";
+		} elsif ($str =~ /^cr$/i) {
+			return "\r";
+		} elsif ($str =~ /^lf$/i) {
+			return "\n";
+		} elsif ($str =~ /^no(ne)?$/i) {
+			return "";
+		} else {
+			die "cannot parse line break: $str";
+		}
+	} else {
+		return "\r\n";
+	}
+}
+
+sub main {
+	my ($opt, $size) = parse_args();
+	my $n = 0;
+
+	$size = parse_size($size);
+	my @br = split //, parse_break($opt);
+	my $width = defined $opt->{width} ? parse_size($opt->{width}) : 80;
+	my $text_width = $width - scalar(@br);
+
+	while ($n < $size) {
+		for (my $i = 0; $width == 0 || $i < $text_width; $i++) {
+			print chr(rand(0x7F - 0x20) + 0x20);
+			last if ++$n >= $size;
+		}
+
+		if ($n < $size) {
+			for my $ch (@br) {
+				print $ch;
+				last if ++$n >= $size;
+			}
+		}
+	}
+}
+
+main();
