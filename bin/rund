@@ -23,7 +23,7 @@ use constant RUNNING      =>  1;
 use constant STARTED      =>  2;
 use constant RESTARTED    =>  3;
 
-use constant DEFAULT_YAML_FILE    => 'runsv.yml';
+use constant DEFAULT_CONFIG_FILE  => 'rund.conf';
 use constant DEFAULT_PID_FILE     => 'proc.pid' ;
 use constant DEFAULT_WORK_DIR     => '.';
 use constant DEFAULT_ALLOW_SECOND => 5;
@@ -51,12 +51,12 @@ sub usage {
 	my ($opt) = @_;
 
 	my $cmd = basename($0);
-	my $yaml = DEFAULT_YAML_FILE;
+	my $yaml = DEFAULT_CONFIG_FILE;
 	my $pidfile = DEFAULT_PID_FILE;
 	my $allow = DEFAULT_ALLOW_SECOND;
 
 	print <<END;
-Usage: $cmd [CONFIGS..|OPTIONS..] [ACTION | [--] COMMAND [ARGS..]]
+Usage: $cmd [CONFIGS|OPTIONS ..] [ACTION | [--] COMMAND [ARGS ..]]
 END
 
 	if (!$opt->{help}) {
@@ -69,8 +69,18 @@ END
 Execute and manage an indefinitely running command.
 
 If COMMAND is given, the command will be executed as a daemon and configs will
-be stored in '$yaml' file. Otherwise, ACTION is performed based on the
-existing config.
+be stored in '$yaml' file (YAML format). Otherwise, ACTION is performed based
+on the existing config.
+
+This program is specifically designed to handle the situation as below, where
+the process is managed in a uniform way, in a specific single directory:
+
+1. Start an indefinitely running command from the command line.
+2. Check, restart, or stop the running command from the command line.
+3. Add a cron job that frequently checks and starts the process whenever it is
+   down (with -stay action), or work around without the priviledge to register
+   services referenced from inittab etc.
+4. Add a cron job that periodically restarts the process.
 
 Actions:
   -s, -stay
@@ -122,8 +132,8 @@ Configs:
   the -dir directory.
 
 Other Options:
-  -d, -dir  BASE_DIR_OR_YAML_FILE
-    Change BASE_DIR_OR_YAML_FILE. (Default dir = PWD, config = '$yaml')
+  -d, -dir  BASE_DIR_OR_CONFIG_FILE
+    Change BASE_DIR_OR_CONFIG_FILE. (Default dir = PWD, config = '$yaml')
   -q, -quiet
     Suppress output.
   -h, -help
@@ -134,7 +144,7 @@ Hooks:
   or scripts are executed on events, and the exit code can be utilized to
   control the flow.
 
-  Below is an example config for hooks.
+  Below is an example config fragment for hooks.
 
 ---
 hooks:
@@ -152,6 +162,10 @@ hooks:
   The 'nocheck' option can be specified for individual event, such as
   'nocheck_before_start' etc.
 
+  For example, log rotation script may be added to either 'before_start'
+  or 'after_stop'. In order to add multiple commands to one hook, create
+  an additional shell script and specify it as the hook. The location of
+  the script is relative to the config directory (or -dir option).
 END
 	}
 
@@ -411,7 +425,7 @@ sub main {
 	if (defined $opt->{dir}) {
 		if (-d $opt->{dir}) {
 			chdir $opt->{dir};
-			$opt->{yaml} = DEFAULT_YAML_FILE;
+			$opt->{yaml} = DEFAULT_CONFIG_FILE;
 		} else {
 			my $dir = dirname($opt->{dir});
 			mkpath $dir;
@@ -421,7 +435,7 @@ sub main {
 		}
 	} else {
 		$opt->{dir}  = DEFAULT_WORK_DIR;
-		$opt->{yaml} = DEFAULT_YAML_FILE;
+		$opt->{yaml} = DEFAULT_CONFIG_FILE;
 	}
 
 	my $should_update = $opt->{start} || $opt->{stay} ||
