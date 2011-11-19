@@ -378,12 +378,14 @@ sub wait_for_process {
 	my ($config, $completion_code) = @_;
 	my $status;
 
+	my %completion = map {$_ => 1}
+			($completion_code, INCONSISTENT, ZOMBIE);
+
 	while (1) {
 		$status = get_process_status($config);
 		my $code = $status->{code};
-		last if $code == $completion_code || $code == INCONSISTENT;
-		print "CODE = $code\n";
-		sleep 1;
+		last if $completion{$code};
+		sleep 0.2;
 	}
 
 	return $status;
@@ -607,7 +609,7 @@ sub main {
 				$status->{code} = $stopped ? RESTARTED : STARTED;
 				handle_hook($opt, $config, 'after_start', $status);
 				show_status($opt, $config, $status);
-			} elsif ($status->{code} == INCONSISTENT) {
+			} else {
 				show_status($opt, $config, $status);
 				exit 1;
 			}
