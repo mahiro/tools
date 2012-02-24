@@ -21,7 +21,7 @@ sub parse_args {
 	my $opt = {};
 
 	GetOptions $opt, qw(
-		directory=s path=s
+		directory=s path=s time
 		gmt mtime older=s larger=s
 		exec=s
 		force interactive verbose
@@ -52,6 +52,9 @@ Options:
       \$long: short for '%Y/%m/%d/\$name.%Y%m%d-%H%M%S'
     If PATTERN does not contain any variables or ends with a slash ('/'),
     it is regarded as a directory where the file will be moved.
+
+  -t, -time
+    Same as -path '\$long' unless any -path option is specified.
 
   -g, -gmt
     Use GMT intead of local time.
@@ -92,6 +95,7 @@ END
 
 	$opt->{older} = parse_timespan($opt->{older}) if defined $opt->{older};
 	$opt->{larger} = parse_filesize($opt->{larger}) if defined $opt->{larger};
+	$opt->{path} = '$long' if $opt->{time} && !defined $opt->{path};
 	return wantarray ? ($opt, @ARGV) : $opt;
 }
 
