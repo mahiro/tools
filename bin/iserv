@@ -1,0 +1,129 @@
+#!/usr/bin/perl -w
+use strict;
+
+use File::Basename;
+use File::Path;
+use Getopt::Long;
+use IO::Handle;
+use IO::Socket;
+use Term::ANSIColor qw(:constants);
+
+sub parse_args {
+	my $opt = {};
+	GetOptions $opt, qw(color shutdown=s help) or die $!;
+
+	if (@ARGV < 1 or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] PORT
+
+Run a server listening on PORT and interact with clients.
+
+Options:
+  -c, -color
+    Show output with color.
+
+  -s, -shutdown CMD
+    Use CMD as a special command to shutdown socket.
+
+  -help
+    Display help.
+END
+
+		exit 1;
+	}
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub main {
+	my ($opt, $port) = parse_args();
+
+	my $server = IO::Socket::INET->new(
+		Proto => 'tcp',
+		LocalPort => $port,
+		Listen => SOMAXCONN,
+		ReuseAddr => 1
+	) or die "$! (port $port)";
+
+	my $msg = "Listening on port ".$server->sockport."...";
+
+	if ($opt->{color}) {
+		print YELLOW, $msg, RESET, "\n";
+	} else {
+		print $msg, "\n";
+	}
+
+	STDOUT->flush;
+
+	while (my $client = $server->accept) {
+		$client->autoflush(1);
+		$msg = "Accepted client: [".$client->peerhost.':'.$client->peerport."]";
+
+		if ($opt->{color}) {
+			print RED, $msg, RESET, "\n";
+		} else {
+			print $msg, "\n";
+		}
+
+		STDOUT->flush;
+
+		my $child_pid = fork;
+		defined $child_pid or die "fork: $!";
+
+		if ($child_pid) {
+			# parent (RECV --> STDOUT)
+			eval {
+				while ($client->connected and (my $line = <$client>)) {
+					if ($opt->{color}) {
+						print GREEN, $line, RESET;
+					} else {
+						print $line;
+					}
+
+					STDOUT->flush;
+				}
+			};
+
+			$msg = "Connection closed by foreign host.";
+
+			if ($opt->{color}) {
+				print RED, $msg, RESET, "\n";
+			} else {
+				print $msg, "\n";
+			}
+
+			STDOUT->flush;
+
+			kill 1, $child_pid;
+			waitpid $child_pid, 0;
+		} else {
+			# child (STDIN --> SEND)
+			eval {
+				while ($client->connected and (my $line = <STDIN>)) {
+					if (defined $opt->{shutdown} && $line =~ /^$opt->{shutdown}\r?\n$/) {
+						$msg = "Shutting down connection.";
+
+						if ($opt->{color}) {
+							print RED, $msg, RESET, "\n";
+						} else {
+							print $msg, "\n";
+						}
+
+						$client->shutdown(2);
+						$client->close;
+						last;
+					} else {
+						$client->send($line);
+						$client->flush;
+					}
+				}
+			};
+
+			exit;
+		}
+	}
+}
+
+main();
