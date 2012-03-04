@@ -21,7 +21,7 @@ sub parse_args {
 	my $opt = {};
 
 	GetOptions $opt, qw(
-		directory=s path=s time
+		chdir=s directory=s path=s time
 		gmt mtime older=s larger=s
 		exec=s
 		force interactive verbose
@@ -38,6 +38,9 @@ Move the specified files (or files in the current directory if omitted) to an
 archive directory, classifying the files by the date/time.
 
 Options:
+  -c WORKING_DIR, -chdir WORKING_DIR
+    Chdir (cd) to the WORKING_DIR before everything else.
+
   -d ARCHIVE_DIR, -directory ARCHIVE_DIR
     Specify archive directory. Default = ./archives
 
@@ -308,6 +311,11 @@ sub show_files {
 
 sub main {
 	my ($opt, @files) = parse_args();
+
+	# Chdir
+	if (defined $opt->{chdir}) {
+		chdir $opt->{chdir} or die "$opt->{chdir}: $!";
+	}
 
 	# Configure input
 	my $dir = defined $opt->{directory} ? $opt->{directory} : 'archives';
