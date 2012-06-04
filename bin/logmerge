@@ -68,19 +68,34 @@ sub close_file {
 	}
 }
 
+sub _str2time {
+	my ($time) = @_;
+	my $msec = 0;
+
+	if ($time =~ s/[,\.](\d+)//) {
+		$msec = "0.$1";
+	}
+
+	my $t = str2time($time);
+	return undef unless defined $t;
+
+	$t += $msec;
+	return $t;
+}
+
 sub get_time {
 	my ($opt, $line) = @_;
 
 	if (defined $opt->{time}) {
 		if ($line =~ /$opt->{time}/o) {
 			if (defined $1 && $1 ne '') {
-				return str2time($1);
+				return _str2time($1);
 			} else {
-				return str2time($&);
+				return _str2time($&);
 			}
 		}
 	} elsif ($line =~ /\[(.*?)\]/) {
-		return str2time($1);
+		return _str2time($1);
 	}
 }
 
