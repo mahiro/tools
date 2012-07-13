@@ -4,17 +4,17 @@ use strict;
 use Cwd;
 use File::Basename;
 use File::Path;
-use Getopt::Long;
+use Getopt::Long qw(:config bundling);
 
 sub parse_args {
 	my $opt = {};
 	@ARGV = map {/^--?d?(\d+)$/ ? ('-depth' => int($1)) : $_} @ARGV;
 
 	GetOptions $opt, qw(
-		all files depth=i maxentries=i nofollowlinks xclude=s
-		color setcolors=s readlink expand
-		indent=s prefix=s
-		help
+		all|a files|f depth|d=i maxentries|m=i nofollowlinks|n exclude|x=s
+		color|c setcolors|s=s readlink|r expand|e
+		indent|i=s prefix|p=s
+		help|h|?
 	) or die $!;
 
 	if ($opt->{help}) {
@@ -30,46 +30,46 @@ A path can be combined into one line if each directory in the path contains
 only one entry.
 
 Search Options:
-  -a, -all
+  -a, --all
     Include hidden files starting with a dot (like 'ls -A').
 
-  -f, -files
+  -f, --files
     Include files, not only directories.
 
-  -d {N}, -depth {N}, -{N} (e.g. -3)
+  -d {N}, --depth {N}, -{N} (e.g. -3)
     Limit the search depth to {N}. Default is 5. Set 0 not to limit the depth.
 
-  -m {M}, -maxentries {M}
+  -m {M}, --maxentries {M}
     Limit the number of entries to search in each directory to {M}. Default is 
     256. Set 0 not to limit the number.
 
-  -n, -nofollowlinks
+  -n, --nofollowlinks
     Do not follow symbolic links pointing to a directory.
 
-  -x {PATTERN}, -xclude {PATTERN}
+  -x {PATTERN}, --exclude {PATTERN}
     Exclude directories/files that match with PATTERN.
 
 Output Options:
-  -c, -color
-  -s {LS_COLORS}, -setcolors {LS_COLORS}
+  -c, --color
+  -s {LS_COLORS}, --setcolors {LS_COLORS}
     Use color based on {LS_COLORS}. Unless explicitly given in the option, the
     LS_COLORS environment variable will be used if it is set. Otherwise, a
     default set of colors will be used.
 
-  -r, -readlink
+  -r, --readlink
     Append the readlink values for symbolic links (as in 'ls -l').
 
-  -e, -expand
+  -e, --expand
     Do not combine a path into one line, i.e., display exactly one entry per
     line.
 
-  -i {INDENT}, -indent {INDENT}
+  -i {INDENT}, --indent {INDENT}
     Set indent for each depth. Default is '  ' (two spaces).
 
-  -p {PREFIX}, -prefix {PREFIX}
+  -p {PREFIX}, --prefix {PREFIX}
     Set perfix for each line. Default is the empty string.
 
-  -h, -help
+  -h, -?, --help
     Display help.
 END
 
@@ -87,7 +87,7 @@ END
 	configure_lscolors($opt) if $opt->{color};
 
 	# Exclude
-	defined $opt->{xclude} and $opt->{exclude_pattern} = make_regex($opt->{xclude});
+	defined $opt->{exclude} and $opt->{exclude_pattern} = make_regex($opt->{exclude});
 
 	return wantarray ? ($opt, @ARGV) : $opt;
 }
@@ -143,7 +143,7 @@ sub configure_lscolors {
 sub should_exclude {
 	my ($opt, $name) = @_;
 
-	if (defined $opt->{xclude}) {
+	if (defined $opt->{exclude}) {
 		my $ret = $name =~ /^$opt->{exclude_pattern}$/o;
 		return $ret;
 	} else {
