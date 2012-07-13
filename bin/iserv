@@ -10,7 +10,7 @@ use Term::ANSIColor qw(:constants);
 
 sub parse_args {
 	my $opt = {};
-	GetOptions $opt, qw(color shutdown=s help) or die $!;
+	GetOptions $opt, qw(binmode color shutdown=s help) or die $!;
 
 	if (@ARGV < 1 or $opt->{help}) {
 		my $cmd = basename($0);
@@ -18,9 +18,13 @@ sub parse_args {
 		print <<END;
 Usage: $cmd [OPTIONS] PORT
 
-Run a server listening on PORT and interact with clients.
+Run a server listening on PORT and interact with clients. By default, Unix
+style LF characters are converted to CRLF.
 
 Options:
+  -b, -binmode
+    Suppress CRLF conversion.
+
   -c, -color
     Show output with color.
 
@@ -115,6 +119,7 @@ sub main {
 						$client->close;
 						last;
 					} else {
+						$line =~ s/\r?\n$/\r\n/ unless $opt->{binmode};
 						$client->send($line);
 						$client->flush;
 					}
