@@ -8,7 +8,7 @@ use Getopt::Long qw(:config bundling);
 
 sub parse_args {
 	my $opt = {};
-	@ARGV = map {/^--?d?(\d+)$/ ? ('-depth' => int($1)) : $_} @ARGV;
+	@ARGV = map {/^--?d?(\d+)$/ ? ('--depth' => int($1)) : $_} @ARGV;
 
 	GetOptions $opt, qw(
 		all|a files|f depth|d=i maxentries|m=i nofollowlinks|n exclude|x=s
