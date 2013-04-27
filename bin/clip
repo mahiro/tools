@@ -1,0 +1,168 @@
+#!/usr/bin/perl -w
+use strict;
+
+use File::Basename;
+use File::Path;
+use Getopt::Long qw(:config bundling);
+
+my $default_bufsize = 2048;
+
+sub parse_args {
+	my $opt = {};
+
+	GetOptions $opt, qw(
+		from|f=s
+		to|t=s
+		inner|i
+		hex|x
+		buffer|b=i
+		help|h|?
+	) or die "$!\n";
+
+	my $missing = !defined $opt->{from} && !defined $opt->{to};
+
+	if (@ARGV < 0 or $missing or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage: $cmd [OPTIONS] [FILES..]
+
+Select a part of the input text or binary data from FILES or STDIN, based on
+pattern matching of one or both ends.
+
+Options:
+  -f FROM, --from FROM
+  -t TO, --to TO
+    Either or both of --from and/or --to must be specified.
+
+  -i, --inner
+    Select inner part, excluding FROM and TO themselves.
+    E.g.
+      --from '<p>' --to '</p>' --inner
+
+  -x, --hex
+    FROM and TO are parsed as hex representation.
+    E.g.
+      --hex --from '4A 4B 4C' (equivalent to --from 'JKL')
+      --hex --from '0x4a 0x4b 0x4c'
+
+  -b SIZE, --buffer SIZE
+    Specify buffer size. (Default = $default_bufsize bytes)
+
+  -h, -?, --help
+    Display help.
+END
+
+		exit 1;
+	}
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub parse_hex {
+	my ($text) = @_;
+	my @hex = $text =~ /(?:0x|\\x)?([0-9a-f]{1,2})h?/ig;
+	return join('', map {chr(hex $_)} @hex);
+}
+
+sub main {
+	my ($opt, @files) = parse_args();
+	@files = (undef) if @files == 0;
+
+	my $from = $opt->{from};
+	my $from_len;
+	my $from_regex;
+
+	if (defined $from) {
+		$from = parse_hex($from) if $opt->{hex};
+		$from_len = length($from);
+		$from_regex = quotemeta($from);
+	}
+
+	my $to = $opt->{to};
+	my $to_len;
+	my $to_regex;
+
+	if (defined $to) {
+		$to = parse_hex($to) if $opt->{hex};
+		$to_len = length($to);
+		$to_regex = quotemeta($to);
+	}
+
+	my $bufsize = $opt->{buffer} || $default_bufsize;
+
+	for my $file (@files) {
+		my $in = \*STDIN;
+		my $active = 0;
+		my $buf = '';
+
+		open($in, $file) if defined $file;
+
+		if (defined $from) {
+			while (sysread($in, $buf, $bufsize, length($buf))) {
+				if ($buf =~ /$from_regex/go) {
+					my $start = pos($buf);
+					$start -= $from_len unless $opt->{inner};
+					$active = 1;
+
+					if (defined $to) {
+						if ($buf =~ /$to_regex/go) {
+							my $end = pos($buf);
+							$end -= $to_len if $opt->{inner};
+							syswrite(STDOUT, $buf, $end - $start, $start);
+							$buf = '';
+							$active = 0;
+						} else {
+							my $end = length($buf) - ($to_len - 1);
+							syswrite(STDOUT, $buf, $end - $start, $start);
+							$buf = substr($buf, -($to_len - 1));
+						}
+					} else {
+						my $end = length($buf);
+						syswrite(STDOUT, $buf, $end - $start, $start);
+						$buf = '';
+					}
+
+					last;
+				} else {
+					$buf = substr($buf, -($from_len - 1));
+				}
+			}
+		} else {
+			$active = 1;
+		}
+
+		if ($active) {
+			if (defined $to) {
+				while (sysread($in, $buf, $bufsize, length($buf))) {
+					if ($buf =~ /$to_regex/go) {
+						my $end = pos($buf);
+						$end -= length($to) if $opt->{inner};
+						syswrite(STDOUT, $buf, $end, 0);
+						$buf = '';
+						$active = 0;
+						last;
+					} else {
+						if (length($buf) >= $to_len) {
+							my $end = length($buf) - ($to_len - 1);
+							syswrite(STDOUT, $buf, $end, 0);
+							$buf = substr($buf, -($to_len - 1));
+						}
+					}
+				}
+			} else {
+				if (length($buf) > 0) {
+					syswrite(STDOUT, $buf);
+				}
+
+				while (sysread($in, $buf, $bufsize, 0)) {
+					syswrite(STDOUT, $buf);
+				}
+			}
+		}
+
+		close($in) if defined $file;
+	}
+}
+
+main();
