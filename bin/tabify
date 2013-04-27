@@ -4,14 +4,21 @@ use strict;
 use File::Basename;
 use File::Copy;
 use File::Temp qw(tempfile);
-use Getopt::Long;
+use Getopt::Long qw(:config bundling);
 use IO::Handle;
 
 sub parse_args {
-	@ARGV = map {m/^-+(\d+)$/ ? ("-width", $1) : $_} @ARGV;
+	@ARGV = map {m/^-+(\d+)$/ ? ("--width", $1) : $_} @ARGV;
 
 	my $opt = {};
-	GetOptions $opt, qw(width=i adjust inplace suffix=s help) or die $!;
+	GetOptions $opt, qw(
+		check|c
+		width|w=i
+		adjust|a
+		inplace|i
+		suffix|s=s
+		help|?|h
+	) or die $!;
 
 	if ($opt->{help} or (
 			($opt->{inplace} or (defined $opt->{suffix} and $opt->{suffix} ne ''))
@@ -21,28 +28,31 @@ sub parse_args {
 		print <<END;
 usage: $cmd [OPTIONS] [FILES..]
 Convert indent spaces into tabs. By default, FILES (or STDIN if no FILES) are
-read and the converted text is printed out to STDOUT. If -inplace is specified,
+read and the converted text is printed out to STDOUT. If --inplace is given,
 the contents of FILES are replaced by the converted text.
 
 options:
-  -w TABWIDTH, -width TABWIDTH, -2, -4, -8, etc.
+  -c, --check
+    Check how many lines would be affected.
+
+  -w TABWIDTH, --width TABWIDTH, -2, -4, -8, etc.
     Specify the width of tabs for interpretation of the existing indents.
 
-  -a, -adjust
+  -a, --adjust
     Use some spaces to retain the original length of indents. For example, if a
     certain line starts with 6 spaces while the tab width is specified as 4,
     the indent is converted into 1 tab followed by 2 spaces.
 
-  -i, -inplace
+  -i, --inplace
     Replace the specified files.
 
-  -s SUFFIX, -suffix SUFFIX
-    If -inplace is turned on, the original files will be saved as the name with
+  -s SUFFIX, --suffix SUFFIX
+    If --inplace is turned on, the original files will be saved as the name with
     SUFFIX appended while FILES are replaced by the results. Otherwise, the
     results will be saved as the name with SUFFIX appended while the original
     files are not modified and no output goes to STDOUT.
 
-  -h, -help
+  -h, -?, --help
     Display this help message.
 END
 
@@ -76,7 +86,19 @@ sub tabify_line {
 sub main {
 	my ($opt, @files) = parse_args();
 
-	if ($opt->{inplace}) {
+	if ($opt->{check}) {
+		my $num = 0;
+
+		while (my $line = <>) {
+			my $result = tabify_line($opt, $line);
+			$num++ if $line ne $result;
+		}
+
+		my $msg = ($num == 0 ? "no changes" :
+				($num == 1 ? "1 line" : "$num lines"));
+
+		warn("tabify: $msg\n");
+	} elsif ($opt->{inplace}) {
 		if (defined $opt->{suffix} and $opt->{suffix} ne '') {
 			my $suffix = $opt->{suffix};
 
