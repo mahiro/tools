@@ -56,6 +56,43 @@ END
 	return ($opt, @ARGV);
 }
 
+sub configure_files {
+	my ($opt, @files) = @_;
+	my @result;
+	my $read_dir;
+
+	$read_dir = sub {
+		my ($dir) = @_;
+		opendir(my $d, $dir) or die "$!: $dir\n";
+
+		while (my $entry = readdir $d) {
+			next if $entry =~ /^\.\.?$/;
+			next if $entry =~ /^\./;
+			my $path = "$dir/$entry";
+
+			if (-f $path) {
+				push @result, $path;
+			} elsif (-d $path) {
+				$read_dir->($path);
+			}
+		}
+
+		closedir $d;
+	};
+
+	for my $file (@files) {
+		if (-f $file) {
+			push @result, $file;
+		} elsif (-d $file) {
+			$read_dir->($file);
+		} else {
+			die "Invalid file: $file\n";
+		}
+	}
+
+	return @result;
+}
+
 sub convert_spaces {
 	my ($opt, $spaces) = @_;
 	my $w = $opt->{width} || 8;
@@ -71,19 +108,48 @@ sub untabify_line {
 
 sub main {
 	my ($opt, @files) = parse_args();
+	@files = configure_files($opt, @files);
 
 	if ($opt->{check}) {
-		my $num = 0;
+		if (@files) {
+			my $total = 0;
 
-		while (my $line = <>) {
-			my $result = untabify_line($opt, $line);
-			$num++ if $line ne $result;
+			for my $file (@files) {
+				my $num = 0;
+				open IN, $file;
+
+				while (my $line = <IN>) {
+					my $result = untabify_line($opt, $line);
+					$num++ if $line ne $result;
+				}
+
+				close IN;
+
+				if ($num > 0) {
+					my $msg = ($num == 1 ? "1 line" : "$num lines");
+					warn("untabify: $msg: $file\n");
+				}
+
+				$total += $num;
+			}
+
+			my $msg = ($total == 0 ? "no changes" :
+					($total == 1 ? "1 line" : "$total lines"));
+
+			warn("untabify: $msg\n");
+		} else {
+			my $num = 0;
+
+			while (my $line = <STDIN>) {
+				my $result = untabify_line($opt, $line);
+				$num++ if $line ne $result;
+			}
+
+			my $msg = ($num == 0 ? "no changes" :
+					($num == 1 ? "1 line" : "$num lines"));
+
+			warn("untabify: $msg\n");
 		}
-
-		my $msg = ($num == 0 ? "no changes" :
-				($num == 1 ? "1 line" : "$num lines"));
-
-		warn("untabify: $msg\n");
 	} elsif ($opt->{inplace}) {
 		if (defined $opt->{suffix} and $opt->{suffix} ne '') {
 			my $suffix = $opt->{suffix};
@@ -130,7 +196,15 @@ sub main {
 				chmod $mode, "$file$suffix";
 			}
 		} else {
-			print untabify_line($opt, $_) while <>;
+			if (@files) {
+				for my $file (@files) {
+					open IN, $file;
+					print untabify_line($opt, $_) while <IN>;
+					close IN;
+				}
+			} else {
+				print untabify_line($opt, $_) while <STDIN>;
+			}
 		}
 	}
 }
