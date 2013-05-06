@@ -1,0 +1,327 @@
+#!/usr/bin/perl -w
+use strict;
+use FindBin;
+
+BEGIN {
+	my $local = "$FindBin::RealBin/$FindBin::RealScript.local";
+	require $local if -f $local;
+}
+
+use File::Basename;
+use File::Path;
+use Getopt::Long qw(:config bundling);
+use MIME::Lite;
+use POSIX;
+use Proc::Daemon;
+use Proc::ProcessTable;
+
+use constant SECOND =>   1;
+use constant MINUTE =>  60 * SECOND;
+use constant HOUR   =>  60 * MINUTE;
+use constant DAY    =>  24 * HOUR;
+use constant MONTH  =>  30 * DAY;
+use constant YEAR   => 365 * DAY;
+
+sub parse_args {
+	my $opt = {};
+
+	GetOptions $opt, qw(
+		pid|p=i
+		user|u=s
+		group|g=s
+		daemon|d
+		startup|s
+		continuous|c
+		mail|m=s
+		regex|r
+		interval|i=i
+		help|h|?
+	) or die "$!\n";
+
+	my $required = defined $opt->{pid} ? 0 : 1;
+
+	if (@ARGV < $required or $opt->{help}) {
+		my $cmd = basename($0);
+
+		print <<END;
+Usage:
+  $cmd [OPTIONS] [--] COMMAND_PATTERN..
+  $cmd [OPTIONS] -p PID [--] [COMMAND_PATTERN..]
+
+Periodically check the status of a process until it finishes.
+
+By default, the status is printed out to STDOUT.
+
+Options:
+  -p PID, --pid PID
+    Specify a particular PID of which to monitor the process.
+
+  -u USER, --user USER
+    Limit to a particular USER when finding a process.
+
+  -g GROUP, --group GROUP
+    Limit to a particular GROUP when finding a process.
+
+  -d, --daemon
+    Daemonize the monitor. It should usually be used with --mail option.
+
+  -s, --startup
+    Check the status until the process starts up (rather than finishes).
+
+  -c, --continuous
+    Continuously monitor the status indefinitely.
+
+  -m RECIPIENT, --mail RECIPIENT
+    Send a mail when a process change is detected.
+
+  -r, --regex
+    Interpret COMMAND_PATTERN as a regex.
+
+  -i SECONDS, --interval SECONDS
+    Set interval to check the process status. (Default = 5)
+
+  -h, -?, --help
+    Display help.
+END
+
+		exit 1;
+	}
+
+	return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub get_proc_by_pid {
+	my ($pid) = @_;
+	my $pt = Proc::ProcessTable->new(cache_ttys => 1);
+
+	for my $p (@{$pt->table}) {
+		if ($pid == $p->pid) {
+			my $command = $p->cmndline;
+
+			if ($command =~ m{^/proc/$pid/cmdline}) {
+				return undef; # zombie
+			} else {
+				return $p
+			}
+
+			last;
+		}
+	}
+
+	return undef;
+}
+
+sub make_pattern {
+	my ($opt, @pattern) = @_;
+	return undef if @pattern == 0;
+
+	my $pattern;
+
+	if ($opt->{regex}) {
+		$pattern = join "\\s+(\\S+\\s+)*", @pattern;
+	} else {
+		$pattern = join "\\s+(\\S+\\s+)*", map {quotemeta $_} @pattern;
+	}
+
+	return qr/$pattern/;
+}
+
+sub match_process {
+	my ($proc, @criteria) = @_;
+
+	for my $params (@criteria) {
+		next unless $params;
+		my $rejected = 0;
+
+		for my $name (keys %$params) {
+			my $value = $params->{$name};
+
+			if (defined $value) {
+				if ($name eq 'pattern') {
+					unless ($proc->cmndline =~ $value) {
+						$rejected = 1;
+						last;
+					}
+				} else {
+					unless ($proc->$name eq $value) {
+						$rejected = 1;
+						last;
+					}
+				}
+			}
+		}
+
+		return 1 unless $rejected;
+	}
+
+	return 0;
+}
+
+sub find_process {
+	my (@criteria) = @_;
+	my $pt = Proc::ProcessTable->new(cache_ttys => 1);
+
+	for my $proc (@{$pt->table}) {
+		next if $proc->pid == $$;
+
+		if (match_process($proc, @criteria)) {
+			my $proc_pid = $proc->pid;
+
+			if ($proc->cmndline =~ m{^/proc/$proc_pid/cmdline}) {
+				return undef;
+			} else {
+				return $proc;
+			}
+		}
+	}
+
+	return undef;
+}
+
+sub print_process_up {
+	my ($proc) = @_;
+	(my $cmd = $proc->cmndline) =~ s/ .*//;
+	$cmd =~ s/.*\///;
+	print "[up] ", $proc->pid, ": ", $cmd, "\n";
+}
+
+sub print_process_down {
+	my ($pid, @pattern) = @_;
+	print "[down] ";
+	print $pid if defined $pid;
+	print ": " if defined $pid && @pattern;
+	print "@pattern" if @pattern;
+	print "\n";
+}
+
+sub format_time {
+	my ($span) = @_;
+
+	my @units = (
+		['year', YEAR],
+		['month', MONTH],
+		['day', DAY],
+		['hour', HOUR],
+		['minute', MINUTE],
+		['second', SECOND]
+	);
+
+	my @result = ();
+
+	for my $unit (@units) {
+		my ($name, $amount) = @$unit;
+		my $value = floor($span / $amount);
+		$span %= $amount;
+
+		if ($value > 0) {
+			push @result, "$value $name".($value == 1 ? '' : 's');
+		}
+	}
+
+	return join(' ', @result);
+}
+
+sub send_mail {
+	my ($opt, $status, $proc, @pattern) = @_;
+	return unless defined $opt->{mail};
+
+	my $subject = "[PROCMON] $status";
+
+	if (@pattern) {
+		$subject .= ": @pattern";
+	} elsif ($proc) {
+		$subject .= ": ".$proc->cmndline;
+	} elsif (defined $opt->{pid}) {
+		$subject .= ": PID=".$opt->{pid};
+	}
+
+	my $body = "Process $status\n\n";
+
+	if ($proc) {
+		$body .= "PID: ".$proc->pid."\n\n";
+		$body .= "Command:\n".$proc->cmndline."\n\n";
+		$body .= "Approx uptime:\n".format_time(time - $proc->start)."\n";
+	} else {
+		$body .= "PID: $opt->{pid}\n" if defined $opt->{pid};
+		$body .= "\nPattern:\n@pattern\n" if @pattern;
+	}
+
+	my $msg = MIME::Lite->new(
+		Subject => $subject,
+		To      => $opt->{mail},
+		Type    => 'TEXT',
+		Data    => $body,
+	) or die $!;
+
+	$msg->send();
+}
+
+sub main {
+	my ($opt, @pattern) = parse_args();
+	my $pattern = make_pattern($opt, @pattern);
+
+	if ($opt->{daemon}) {
+		Proc::Daemon::Init();
+	}
+
+	my $interval = $opt->{interval} || 5;
+	my %common = ();
+	$common{uid} = getpwnam($opt->{user}) if defined $opt->{user};
+	$common{gid} = getpwnam($opt->{group}) if defined $opt->{group};
+
+	my $proc;
+	my $last_proc;
+	my $last_running_proc;
+
+	while (1) {
+		if ($proc) {
+			$proc = find_process({
+				pid => $proc->pid,
+				cmndline => $proc->cmndline,
+				%common,
+			}, $opt->{continuous} ? {
+				pattern => $pattern,
+				%common,
+			} : undef);
+		} else {
+			$proc = find_process({
+				pid => $opt->{pid},
+				pattern => $pattern,
+				%common,
+			});
+		}
+
+		if ($proc) {
+			print_process_up($proc);
+		} else {
+			print_process_down($opt->{pid}, @pattern);
+		}
+
+		if ($opt->{startup}) {
+			if ($proc) {
+				send_mail($opt, 'STARTED', $proc, @pattern);
+				last;
+			}
+		} elsif ($opt->{continuous}) {
+			if ($proc && !$last_proc && $last_running_proc) {
+				send_mail($opt, 'UP', $proc, @pattern);
+			} elsif (!$proc && $last_proc) {
+				send_mail($opt, 'DOWN', $last_running_proc, @pattern);
+			}
+		} else {
+			unless ($proc) {
+				send_mail($opt, 'DONE', $last_running_proc, @pattern);
+				last;
+			}
+		}
+
+		if ($proc) {
+			$last_running_proc = $proc;
+		}
+
+		$last_proc = $proc;
+		sleep $interval if $interval;
+	}
+}
+
+main();
