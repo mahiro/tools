@@ -107,7 +107,7 @@ sub test_socket {
         print "socket: [OK]\n" if $opt->{verbose};
     } else {
         print "socket: $!\n";
-        exit 1;
+        return undef;
     }
 
     return $sock;
@@ -118,9 +118,10 @@ sub test_close {
 
     if (close $sock) {
         print "close: [OK]\n" if $opt->{verbose};
+        return 0;
     } else {
         print "close: $!\n";
-        exit 1;
+        return 1;
     }
 }
 
@@ -129,27 +130,34 @@ sub test_shutdown {
 
     if (shutdown $sock, 2) {
         print "shutdown: [OK]\n" if $opt->{verbose};
+        return 0;
     } else {
         print "shutdown: $!\n";
+        return 1;
     }
 }
 
 sub test_bind {
     my ($opt, $sock, $paddr, $hostport) = @_;
+    my $errors = 0;
     my $connected = 0;
 
     if (bind $sock, $paddr) {
         print "bind($hostport): [FREE]\n" if $opt->{verbose} or !$opt->{listen};
-        $connected = test_listen($opt, $sock, $hostport) if $opt->{listen};
+        my $err = 0;
+        ($err, $connected) = test_listen($opt, $sock, $hostport) if $opt->{listen};
+        $errors += $err;
     } else {
         print "bind($hostport): $!\n";
+        $errors++;
     }
 
-    return $connected;
+    return ($errors, $connected);
 }
 
 sub test_listen {
     my ($opt, $sock, $hostport) = @_;
+    my $errors = 0;
     my $connected = 0;
     my $maxconn = defined $opt->{maxconn} ? $opt->{maxconn} : SOMAXCONN;
 
@@ -158,13 +166,15 @@ sub test_listen {
         $connected = 1;
     } else {
         print "listen($hostport): $!\n";
+        $errors++;
     }
 
-    return $connected;
+    return ($errors, $connected);
 }
 
 sub test_connect {
     my ($opt, $sock, $paddr, $hostport) = @_;
+    my $errors = 0;
     my $connected = 0;
 
     if (connect $sock, $paddr) {
@@ -172,13 +182,15 @@ sub test_connect {
         $connected = 1;
     } else {
         print "connect($hostport): $!\n";
+        $errors++;
     }
 
-    return $connected;
+    return ($errors, $connected);
 }
 
 sub run_socktest {
     my ($opt, $sock, $host, $port) = @_;
+    my $errors = 0;
 
     my $hostport = ($host eq 'localhost' || $host eq '127.0.0.1') ?
         $port : "$host:$port";
@@ -188,21 +200,32 @@ sub run_socktest {
     if ($paddr) {
         $sock = test_socket($opt) unless $opt->{reuse};
 
-        my $connected = 0;
+        if ($sock) {
+            my $err;
+            my $connected = 0; # indicates if we should shutdown later
 
-        if ($opt->{bind}) {
-            $connected = test_bind($opt, $sock, $paddr, $hostport);
+            if ($opt->{bind}) {
+                ($err, $connected) = test_bind($opt, $sock, $paddr, $hostport);
+                $errors += $err;
+            }
+
+            if ($opt->{connect}) {
+                ($err, $connected) = test_connect($opt, $sock, $paddr, $hostport);
+                $errors += $err;
+            }
+
+            $errors += test_shutdown($opt, $sock) if $connected;
+            $errors += test_close($opt, $sock) unless $opt->{reuse};
+        } else {
+            $errors++;
         }
-
-        if ($opt->{connect}) {
-            $connected = test_connect($opt, $sock, $paddr, $hostport);
-        }
-
-        test_shutdown($opt, $sock) if $connected;
-        test_close($opt, $sock) unless $opt->{reuse};
+    } else {
+        $errors++;
     }
 
     print "\n" if $opt->{verbose};
+
+    return $errors;
 }
 
 sub main {
@@ -218,6 +241,8 @@ sub main {
         $opt->{bind} = 1;
     }
 
+    my $errors = 0;
+
     my $sock = test_socket($opt) if $opt->{reuse};
     print "\n" if $opt->{verbose} and $opt->{reuse};
 
@@ -226,11 +251,12 @@ sub main {
         my ($from_port, $to_port) = @$ports;
 
         for my $port ($from_port..$to_port) {
-            run_socktest($opt, $sock, $host, $port);
+            $errors += run_socktest($opt, $sock, $host, $port);
         }
     }
 
-    test_close($opt, $sock) if $opt->{reuse};
+    $errors += test_close($opt, $sock) if $opt->{reuse};
+    exit $errors;
 }
 
 main();
