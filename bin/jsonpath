@@ -1,0 +1,217 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use FindBin;
+
+BEGIN {
+    my $local = "$FindBin::RealBin/$FindBin::RealScript.local";
+    require $local if -f $local;
+}
+
+use File::Basename;
+use Getopt::Long qw(:config bundling);
+use JSON::PP ();
+use JSON::Path;
+use YAML::XS ();
+
+sub parse_args {
+    my $opt = {};
+
+    for my $arg (@ARGV) {
+        last if $arg eq '--';
+        $arg =~ s/^--?(\d+)$/--depth=$1/;
+    }
+
+    GetOptions $opt, qw(
+        keys|k
+        depth|d=i
+        preserve|p
+        yaml|y
+        help|h|?
+    ) or die "$!\n";
+
+    if (@ARGV < 1 or $opt->{help}) {
+        my $cmd = basename($0);
+
+        print <<END;
+Usage: $cmd [OPTIONS] JSONPATH
+
+Parse the input as JSON, match the data with the JSONPATH, and print the
+matched objects or texts.
+
+The input data can also be YAML.
+
+Options:
+  -k, --keys
+    List only keys at the matched objects instead of the entire objects.
+
+  -d, --depth N (or simply -1, -2, ...)
+    Limit the output depth to N, relative to the matched objects.
+
+  -p, --preserve
+    Preserve and print the parent structure of the matched objects.
+
+  -y, --yaml
+    Print output in YAML format instead of JSON.
+
+  -h, -?, --help
+    Display help.
+
+Conversion between JSON and YAML:
+
+  Convert YAML to JSON:
+  \$ $cmd . < YAML > JSON
+
+  Convert JSON to YAML:
+  \$ $cmd -y . < JSON > YAML
+
+END
+
+        exit 1;
+    }
+
+    return wantarray ? ($opt, @ARGV) : $opt;
+}
+
+sub new_object {
+    my ($object) = @_;
+
+    if (ref $object eq 'HASH') {
+        return {};
+    } elsif (ref $object eq 'ARRAY') {
+        return [];
+    } else {
+        return $object;
+    }
+}
+
+sub prune_object {
+    my ($object, $depth) = @_;
+
+    if (ref $object eq 'HASH') {
+        if ($depth <= 0) {
+            return {};
+        } else {
+            return +{map {
+                $_ => prune_object($object->{$_}, $depth - 1)
+            } keys %$object};
+        }
+    } elsif (ref $object eq 'ARRAY') {
+        if ($depth <= 0) {
+            return [];
+        } else {
+            return [map {prune_object($_, $depth - 1)} @$object];
+        }
+    } else {
+        return $object;
+    }
+}
+
+my $json = JSON::PP->new();
+$json->indent(1);
+$json->space_after(1);
+$json->canonical(1);
+$json->indent_length(2);
+
+sub print_objects {
+    my ($opt, $objects) = @_;
+    my $opt_yaml = $opt->{yaml};
+
+    for my $object (@$objects) {
+        if (ref $object) {
+            if ($opt_yaml) {
+                print YAML::XS::Dump($object);
+            } else {
+                print $json->encode($object);
+            }
+        } elsif (defined $object) {
+            print $object, "\n";
+        } else {
+            print "\n";
+        }
+    }
+}
+
+sub rebuild_object {
+    my ($opt, $input_root, $values, $paths) = @_;
+    my $output_root = new_object($input_root);
+
+    for my $i (0..$#$values) {
+        my $value = $values->[$i];
+        my $path = $paths->[$i];
+
+        my $input_ref = $input_root;
+        my $output_ref = $output_root;
+
+        my @keys = ($path =~ /\[\'(.*?)\'\]/g);
+        @keys = ($path =~ /\[(.*?)\]/g) if @keys == 0;
+        last if @keys == 0;
+
+        my $last_key = pop @keys;
+
+        for my $key (@keys) {
+            if (ref $input_ref eq 'HASH') {
+                unless (exists $output_ref->{$key}) {
+                    $output_ref->{$key} = new_object($input_ref->{$key});
+                }
+
+                $input_ref = $input_ref->{$key};
+                $output_ref = $output_ref->{$key};
+            } elsif (ref $input_ref eq 'ARRAY') {
+                unless (exists $output_ref->[$key]) {
+                    $output_ref->[$key] = new_object($input_ref->[$key]);
+                }
+
+                $input_ref = $input_ref->[$key];
+                $output_ref = $output_ref->[$key];
+            } else {
+                last;
+            }
+        }
+
+        if (ref $output_ref eq 'HASH') {
+            $output_ref->{$last_key} = $value;
+        } elsif (ref $output_ref eq 'ARRAY') {
+            $output_ref->[$last_key] = $value;
+        }
+    }
+
+    return $output_root;
+}
+
+sub main {
+    my ($opt) = parse_args();
+    my $json_path_string = shift @ARGV;
+    $json_path_string =~ s/^\./\$./;
+    my $json_path = JSON::Path->new($json_path_string);
+    my $input_root = YAML::XS::Load(join('', <>));
+    my @values = $json_path->values($input_root);
+
+    if ($opt->{keys}) {
+        for my $value (@values) {
+            if (ref $value eq 'HASH') {
+                $value = [sort keys %$value];
+            } elsif (ref $value eq 'ARRAY') {
+                $value = [0..$#$value];
+            } else {
+                $value = [];
+            }
+        }
+    } elsif (defined $opt->{depth}) {
+        for my $value (@values) {
+            $value = prune_object($value, $opt->{depth});
+        }
+    }
+
+    if ($opt->{preserve}) {
+        my @paths = $json_path->paths($input_root);
+        my $output_root = rebuild_object($opt, $input_root, \@values, \@paths);
+        print_objects($opt, [$output_root]);
+    } elsif ($opt->{keys}) {
+        print_objects($opt, [map {@$_} @values]);
+    } else {
+        print_objects($opt, \@values);
+    }
+}
+
+main();
