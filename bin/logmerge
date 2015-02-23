@@ -11,11 +11,16 @@ BEGIN {
 use Date::Parse;
 use File::Basename;
 use File::Path;
-use Getopt::Long;
+use Getopt::Long qw(:config bundling);
 
 sub parse_args {
     my $opt = {};
-    GetOptions $opt, qw(time=s quiet help) or die $!;
+
+    GetOptions $opt, qw(
+        time|t=s
+        quiet|q
+        help|?|h
+    ) or die "$!\n";
 
     if (@ARGV < 1 or $opt->{help}) {
         my $cmd = basename($0);
@@ -30,15 +35,15 @@ A timestamp is extracted from the first occurrence of a square bracket "[]" in
 each line.
 
 Options:
-  -t, -time REGEX
+  -t, --time REGEX
     Use REGEX to extract a timestamp from each line. The first pair of
     parentheses (\$1) is captured as the timestamp string. Otherwise, the whole
     part matched with the REGEX is captured.
 
-  -q, -quiet
+  -q, --quiet
     Exclude any lines in which a timestamp is not found.
 
-  -h, -help
+  -h, -?, --help
     Display help.
 END
 
