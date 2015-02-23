@@ -55,18 +55,23 @@ END
 
 sub open_file {
     my ($opt, $path) = @_;
-    my $fd;
-    open $fd, $path or die "$path: $!";
-    return {fd => $fd, path => $path, open => 1, current => undef, time => 0};
+    open(my $fh, $path) or die "$path: $!\n";
+
+    if ($path =~ /\.gz$/) {
+        require IO::Uncompress::Gunzip;
+        $fh = IO::Uncompress::Gunzip->new($fh) or die "$path: $!\n";
+    }
+
+    return {fh => $fh, path => $path, open => 1, current => undef, time => 0};
 }
 
 sub close_file {
     my ($opt, $file) = @_;
 
     if ($file->{open}) {
-        if ($file->{fd}) {
-            eval {close $file->{fd}};
-            $file->{fd} = undef;
+        if ($file->{fh}) {
+            eval {close $file->{fh}};
+            $file->{fh} = undef;
         }
 
         $file->{current} = undef;
@@ -112,10 +117,10 @@ sub advance_file {
 
     print $file->{current} if $file->{current} && $printing;
 
-    my $fd = $file->{fd};
+    my $fh = $file->{fh};
 
     while (1) {
-        my $line = <$fd>;
+        my $line = <$fh>;
 
         if (!defined $line) {
             close_file($opt, $file);
