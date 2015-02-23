@@ -23,16 +23,17 @@ sub parse_args {
         print <<END;
 Usage: $cmd [OPTIONS] LOGFILES..
 
-Merge and sort log files based on timestamps (without maintaining the entire
-file contents in memory), assuming each log file is in the order of timestamps.
+Merge log files and sort all the lines based on timestamps (without maintaining
+the entire file contents in memory).
 
 A timestamp is extracted from the first occurrence of a square bracket "[]" in
 each line.
 
 Options:
   -t, -time REGEX
-    Use REGEX to extract a timestamp from each line. If \$1 is captured, it is
-    used as the time string. Otherwise, \$& is used.
+    Use REGEX to extract a timestamp from each line. The first pair of
+    parentheses (\$1) is captured as the timestamp string. Otherwise, the whole
+    part matched with the REGEX is captured.
 
   -q, -quiet
     Exclude any lines in which a timestamp is not found.
@@ -90,8 +91,8 @@ sub get_time {
         if ($line =~ /$opt->{time}/o) {
             if (defined $1 && $1 ne '') {
                 return _str2time($1);
-            } else {
-                return _str2time($&);
+            } elsif ($line =~ /($opt->{time})/o) {
+                return _str2time($1);
             }
         }
     } elsif ($line =~ /\[(.*?)\]/) {
