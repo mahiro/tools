@@ -1,0 +1,52 @@
+#!/usr/bin/env python
+import matplotlib.pyplot as plt
+import re
+import sys
+
+
+def set_value(lst, n, val):
+    while len(lst) <= n:
+        lst.append(None)
+    lst[n] = val
+
+
+def main():
+    series = []
+    n = 0
+    sep = re.compile(r'\s+')
+
+    for line in sys.stdin:
+        line = line.rstrip();
+        chunks = sep.split(line)
+        s = 0
+
+        for chunk in chunks:
+            while len(series) <= s:
+                series.append({'xs': [], 'ys': []})
+
+            pair = chunk.split(',')
+
+            if len(pair) > 1:
+                set_value(series[s]['xs'], n, float(pair[0]))
+                set_value(series[s]['ys'], n, float(pair[1]))
+            else:
+                set_value(series[s]['ys'], n, float(pair[0]))
+
+            s += 1
+
+        n += 1
+
+    for data in series:
+        xs = data['xs']
+        ys = data['ys']
+
+        if len(xs) > 0:
+            plt.plot(xs, ys)
+        else:
+            plt.plot(ys)
+
+    plt.show()
+
+
+if __name__ == '__main__':
+    main()
